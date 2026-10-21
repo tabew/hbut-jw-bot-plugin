@@ -22,6 +22,7 @@
 
 #include "jw_hbut.hpp"
 #include "jw_http.hpp"
+#include "jw_local.hpp"
 #include "jw_render.hpp"
 #include "jw_util.hpp"
 #include "simple_json.hpp"
@@ -204,7 +205,8 @@ struct WeekResult {
     int week = 1;
 };
 
-bool load_week(hbut::Session& s, int want_week, WeekResult* out, std::string* err, bool* expired) {
+bool load_week(hbut::Session& s, const UserEdits& edits, int want_week, WeekResult* out,
+               std::string* err, bool* expired) {
     *expired = false;
     HttpClient hc;
     hc.jar = s.jar;
@@ -229,12 +231,15 @@ bool load_week(hbut::Session& s, int want_week, WeekResult* out, std::string* er
 
     std::string e;
     bool exp = false;
-    if (!hbut::fetch_schedule(hc, s.base, sem, s.xhid, &out->courses, &e, &exp)) {
+    std::vector<hbut::Course> raw;
+    if (!hbut::fetch_schedule(hc, s.base, sem, s.xhid, &raw, &e, &exp)) {
         if (exp) *expired = true;
         *err = e;
         return false;
     }
     s.jar = hc.jar;
+
+    out->courses = apply_edits(raw, edits); // 先套本地改写，再按周过滤
 
     int week = want_week > 0 ? want_week : out->cal.current_week;
     if (week < 1) week = 1;
@@ -255,12 +260,42 @@ bool load_week(hbut::Session& s, int want_week, WeekResult* out, std::string* er
     return true;
 }
 
+// 只拉教务原始课程（不套本地改写、不按周过滤），编辑指令用
+bool load_raw_courses(hbut::Session& s, std::vector<hbut::Course>* out, std::string* err,
+                      bool* expired) {
+    *expired = false;
+    HttpClient hc;
+    hc.jar = s.jar;
+    std::string sem = hbut::resolve_semester(s.semester);
+    s.semester = sem;
+
+    if (s.xhid.empty()) {
+        std::string e;
+        bool exp = false;
+        if (!hbut::fetch_xhid(hc, s.base, sem, &s.xhid, &e, &exp)) {
+            if (exp) *expired = true;
+            *err = e;
+            return false;
+        }
+    }
+    std::string e;
+    bool exp = false;
+    if (!hbut::fetch_schedule(hc, s.base, sem, s.xhid, out, &e, &exp)) {
+        if (exp) *expired = true;
+        *err = e;
+        return false;
+    }
+    s.jar = hc.jar;
+    return true;
+}
+
 std::string render_for(const hbut::Session& s, const WeekResult& wr, int64_t qq, std::string* err) {
     TimetableImage img;
     img.semester_label = semester_label(s.semester);
     img.week = wr.week;
     img.total_weeks = wr.cal.total_weeks;
     img.courses = wr.courses;
+    img.period_times = load_period_times();
 
     const hbut::WeekSpan* span = nullptr;
     for (const auto& w : wr.cal.weeks) {
@@ -397,8 +432,13 @@ private:
                "• /课表 扫码            学习通扫码登录（私聊）\n"
                "• /课表 登录 学号 密码   统一身份认证登录（私聊）\n"
                "• /课表 验证码 1234      需要验证码时补填\n"
-               "• /课表 状态 / 学期 2026-2027-1 / 退出\n"
-               "• /课表 诊断            排查接口问题\n"
+               "• /课表 课程            列出课程编号\n"
+               "• /课表 改 1 教室=1教-301 教师=李明   改课程信息\n"
+               "• /课表 加 名称=自习 星期=3 节次=9 连堂=2 周数=1-16\n"
+               "• /课表 删 1            隐藏某门课\n"
+               "• /课表 还原            清除本地改动\n"
+               "• /课表 时间            查看/修改每节作息时间\n"
+               "• /课表 状态 / 诊断 / 学期 2026-2027-1 / 退出\n"
                "密码不会被保存，只保留教务系统的 Cookie 会话。";
     }
 
@@ -480,6 +520,35 @@ private:
             start_week(ctx, n, 0);
             return;
         }
+        if (starts(args, "课程") || starts(args, "列表") || starts(args, "课程列表")) {
+            show_courses(ctx, n);
+            return;
+        }
+        if (starts(args, "改") || starts(args, "修改") || starts(args, "编辑")) {
+            std::string rest = starts(args, "改") ? trim(args.substr(3)) : trim(args.substr(6));
+            edit_course(ctx, n, rest);
+            return;
+        }
+        if (starts(args, "加") || starts(args, "新增") || starts(args, "添加")) {
+            std::string rest = starts(args, "加") ? trim(args.substr(3)) : trim(args.substr(6));
+            add_course(ctx, n, rest);
+            return;
+        }
+        if (starts(args, "删") || starts(args, "隐藏")) {
+            std::string rest = starts(args, "删") ? trim(args.substr(3)) : trim(args.substr(6));
+            remove_course(ctx, n, rest);
+            return;
+        }
+        if (starts(args, "还原") || starts(args, "重置修改")) {
+            clear_user_edits(ctx.user_id);
+            n.say("已清除本地的课程改动（改名/隐藏/自定义课程），再发「/课表」就是教务原始课表。");
+            return;
+        }
+        if (starts(args, "时间") || starts(args, "作息")) {
+            std::string rest = trim(args.substr(6));
+            edit_times(n, rest);
+            return;
+        }
 
         int week = pick_week(args);
         if (week > 0) {
@@ -500,15 +569,18 @@ private:
         n.say(want_week > 0 ? ("正在获取第 " + std::to_string(want_week) + " 周课表…")
                             : std::string("正在获取本周课表…"));
 
+        UserEdits edits;
+        load_user_edits(ctx.user_id, &edits);
+
         int64_t qq = ctx.user_id;
-        std::thread([qq, s, want_week, n]() {
+        std::thread([qq, s, edits, want_week, n]() {
             ThreadGuard guard;
             try {
                 hbut::Session sess = s;
                 WeekResult wr;
                 std::string err;
                 bool expired = false;
-                if (!load_week(sess, want_week, &wr, &err, &expired)) {
+                if (!load_week(sess, edits, want_week, &wr, &err, &expired)) {
                     if (expired) {
                         Store::get().drop_session(qq);
                         n.say("教务会话已过期，请重新登录：\n私聊「/课表 扫码」或「/课表 登录 学号 密码」");
@@ -528,6 +600,7 @@ private:
                 std::string cap = "第 " + std::to_string(wr.week) + " 周课表";
                 if (wr.cal.current_week == wr.week) cap += "（本周）";
                 if (wr.courses.empty()) cap += " · 本周无课";
+                if (!edits.empty()) cap += "\n· 已应用本地改动（/课表 还原 可清除）";
                 if (!wr.cal.from_school) cap += "\n（校历接口不可用，周次按日期估算，可用「/课表 学期」确认）";
                 n.say("[CQ:image,file=" + png + "]\n" + cap);
             } catch (const std::exception& e) {
@@ -753,6 +826,445 @@ private:
         Store::get().put_session(qq, s);
         n.note("[教务] 账号密码登录成功 qq=" + std::to_string(qq) + " sid=" + user);
         n.say("✅ 登录成功（学号 " + user + "）\n发送「/课表」查看本周课表。");
+    }
+
+    // ---- 课程编辑：解析与展示 ----
+
+    static const char* weekday_cn(int wd) {
+        static const char* kNames[] = {"周一", "周二", "周三", "周四", "周五", "周六", "周日"};
+        if (wd < 1 || wd > 7) return "周?";
+        return kNames[wd - 1];
+    }
+
+    static bool parse_kv(const std::string& token, std::string* key, std::string* value) {
+        size_t pos = token.find_first_of("=:：");
+        if (pos == std::string::npos || pos == 0) return false;
+        *key = trim(token.substr(0, pos));
+        *value = trim(token.substr(pos + 1));
+        // 全角等号：一个字符 3 字节，substr 已按字节切开，这里只需去掉残留
+        if (!key->empty() && (unsigned char)key->back() == 0xEF && key->size() >= 3) {
+            key->erase(key->size() - 3);
+        }
+        return !key->empty();
+    }
+
+    static std::string norm_key(const std::string& raw) {
+        std::string k = to_lower(trim(raw));
+        if (k == "name" || k == "名称" || k == "课名" || k == "课程") return "name";
+        if (k == "room" || k == "教室" || k == "地点" || k == "场地") return "room";
+        if (k == "teacher" || k == "教师" || k == "老师") return "teacher";
+        if (k == "weekday" || k == "星期" || k == "周几") return "weekday";
+        if (k == "period" || k == "节次" || k == "开始节" || k == "起始节") return "period";
+        if (k == "count" || k == "连堂" || k == "节数" || k == "长度") return "count";
+        if (k == "weeks" || k == "周数" || k == "周次") return "weeks";
+        if (k == "hidden" || k == "隐藏") return "hidden";
+        return "";
+    }
+
+    static int parse_weekday_str(const std::string& value) {
+        std::string v = trim(value);
+        static const char* kCn[] = {"一", "二", "三", "四", "五", "六", "日"};
+        for (int i = 0; i < 7; ++i) {
+            if (v.find(kCn[i]) != std::string::npos) {
+                // "周日"/"周天"/"星期日" 都归到 7
+                if (i == 6) return 7;
+                return i + 1;
+            }
+        }
+        int n = atoi(v.c_str());
+        if (n >= 1 && n <= 7) return n;
+        return 0;
+    }
+
+    static bool is_all_digits(const std::string& s) {
+        if (s.empty()) return false;
+        for (char c : s) {
+            if (!isdigit((unsigned char)c)) return false;
+        }
+        return true;
+    }
+
+    // ---- /课表 课程 ----
+    static void show_courses(const PluginContext& ctx, Notifier n) {
+        hbut::Session s;
+        if (!Store::get().get_session(ctx.user_id, &s)) {
+            n.say("还没登录教务系统，先「/课表 扫码」或「/课表 登录 学号 密码」。");
+            return;
+        }
+        n.say("正在读取教务课程…");
+        int64_t qq = ctx.user_id;
+        std::thread([qq, s, n]() {
+            ThreadGuard guard;
+            try {
+                hbut::Session sess = s;
+                std::vector<hbut::Course> raw;
+                std::string err;
+                bool expired = false;
+                if (!load_raw_courses(sess, &raw, &err, &expired)) {
+                    if (expired) {
+                        Store::get().drop_session(qq);
+                        n.say("教务会话已过期，请重新登录。");
+                    } else {
+                        n.say("读取课程失败：" + err);
+                    }
+                    return;
+                }
+                Store::get().put_session(qq, sess);
+
+                UserEdits edits;
+                load_user_edits(qq, &edits);
+                auto names = course_names(raw);
+                if (names.empty()) {
+                    n.say("教务里没有读到课程。");
+                    return;
+                }
+
+                std::string out = "教务课程（共 " + std::to_string(names.size()) + " 门）\n";
+                for (size_t i = 0; i < names.size(); ++i) {
+                    const hbut::Course* sample = nullptr;
+                    for (const auto& c : raw) {
+                        if (c.name == names[i]) {
+                            sample = &c;
+                            break;
+                        }
+                    }
+                    std::string line = std::to_string(i + 1) + ". " + names[i];
+                    if (sample) {
+                        line += "  " + std::string(weekday_cn(sample->weekday)) + " 第" +
+                                std::to_string(sample->period) + "-" +
+                                std::to_string(sample->period + std::max(1, sample->count) - 1) +
+                                "节";
+                        if (!sample->room.empty()) line += "  " + sample->room;
+                    }
+                    for (const auto& e : edits.edits) {
+                        if (e.match != names[i]) continue;
+                        if (e.hidden) line += "  [已隐藏]";
+                        else if (!e.name.empty()) line += "  [已改名→" + e.name + "]";
+                        break;
+                    }
+                    out += line + "\n";
+                }
+                if (!edits.adds.empty()) {
+                    out += "自定义课程：" + std::to_string(edits.adds.size()) + " 门\n";
+                }
+                out += "\n改：/课表 改 1 教室=1教-301 教师=李明\n"
+                       "加：/课表 加 名称=自习 星期=3 节次=9 连堂=2 周数=1-16 教室=图书馆\n"
+                       "删：/课表 删 1        还原：/课表 还原";
+                n.say(out);
+            } catch (...) {
+                n.say("读取课程失败");
+            }
+        }).detach();
+    }
+
+    // 把 kv 列表套到 edit 上；返回处理了几个字段
+    static int apply_kvs(const std::vector<std::pair<std::string, std::string>>& kvs, CourseEdit* e) {
+        int applied = 0;
+        for (const auto& kv : kvs) {
+            std::string k = kv.first;
+            const std::string& v = kv.second;
+            if (k == "name") { e->name = v; applied++; }
+            else if (k == "room") { e->room = v; applied++; }
+            else if (k == "teacher") { e->teacher = v; applied++; }
+            else if (k == "weekday") {
+                int wd = parse_weekday_str(v);
+                if (wd > 0) { e->weekday = wd; applied++; }
+            } else if (k == "period") {
+                int p = atoi(v.c_str());
+                if (p > 0) { e->period = p; applied++; }
+            } else if (k == "count") {
+                int c = atoi(v.c_str());
+                if (c > 0) { e->count = c; applied++; }
+            } else if (k == "weeks") {
+                e->weeks = v;
+                applied++;
+            } else if (k == "hidden") {
+                e->hidden = (v == "1" || v == "true" || v == "是");
+                applied++;
+            }
+        }
+        return applied;
+    }
+
+    // ---- /课表 改 编号|课名 k=v ... ----
+    static void edit_course(const PluginContext& ctx, Notifier n, const std::string& rest) {
+        auto fields = split_fields(rest);
+        if (fields.empty()) {
+            n.say("用法：/课表 改 编号 教室=1教-301 教师=李明\n先用「/课表 课程」看编号。");
+            return;
+        }
+        std::string sel = fields[0];
+        std::vector<std::pair<std::string, std::string>> kvs;
+        for (size_t i = 1; i < fields.size(); ++i) {
+            std::string k, v;
+            if (!parse_kv(fields[i], &k, &v)) continue;
+            std::string nk = norm_key(k);
+            if (nk.empty()) continue;
+            kvs.push_back({nk, v});
+        }
+        if (kvs.empty()) {
+            n.say("没识别到要改的字段。例如：/课表 改 1 教室=1教-301 教师=李明\n"
+                  "可用字段：名称 / 教室 / 教师 / 星期 / 节次 / 连堂 / 周数 / 隐藏");
+            return;
+        }
+
+        hbut::Session s;
+        if (!Store::get().get_session(ctx.user_id, &s)) {
+            n.say("还没登录教务系统，先「/课表 扫码」或「/课表 登录 学号 密码」。");
+            return;
+        }
+        int64_t qq = ctx.user_id;
+        n.say("正在应用修改…");
+        std::thread([qq, s, sel, kvs, n]() {
+            ThreadGuard guard;
+            try {
+                hbut::Session sess = s;
+                std::vector<hbut::Course> raw;
+                std::string err;
+                bool expired = false;
+                if (!load_raw_courses(sess, &raw, &err, &expired)) {
+                    if (expired) {
+                        Store::get().drop_session(qq);
+                        n.say("教务会话已过期，请重新登录。");
+                    } else {
+                        n.say("读取课程失败：" + err);
+                    }
+                    return;
+                }
+                Store::get().put_session(qq, sess);
+
+                auto names = course_names(raw);
+                std::string match;
+                if (is_all_digits(sel)) {
+                    int idx = atoi(sel.c_str());
+                    if (idx < 1 || idx > (int)names.size()) {
+                        n.say("编号超出范围，发「/课表 课程」查看编号。");
+                        return;
+                    }
+                    match = names[idx - 1];
+                } else {
+                    for (const auto& nm : names) {
+                        if (nm == sel) {
+                            match = nm;
+                            break;
+                        }
+                    }
+                    if (match.empty()) {
+                        n.say("找不到课程「" + sel + "」，发「/课表 课程」查看准确课名与编号。");
+                        return;
+                    }
+                }
+
+                UserEdits edits;
+                load_user_edits(qq, &edits);
+                CourseEdit* target = find_or_add_edit(&edits, match);
+                int applied = apply_kvs(kvs, target);
+                if (applied == 0) {
+                    n.say("没有可用的字段值，检查一下格式（如 教室=1教-301）。");
+                    return;
+                }
+                if (!save_user_edits(qq, edits)) {
+                    n.say("保存失败，检查 data/hbut_jw 目录权限。");
+                    return;
+                }
+
+                std::string detail;
+                if (!target->name.empty()) detail += "名称→" + target->name + " ";
+                if (!target->room.empty()) detail += "教室→" + target->room + " ";
+                if (!target->teacher.empty()) detail += "教师→" + target->teacher + " ";
+                if (target->weekday > 0) detail += std::string("星期→") + weekday_cn(target->weekday) + " ";
+                if (target->period > 0) detail += "节次→" + std::to_string(target->period) + " ";
+                if (target->count > 0) detail += "连堂→" + std::to_string(target->count) + " ";
+                if (!target->weeks.empty()) detail += "周数→" + target->weeks + " ";
+                n.say("✅ 已修改「" + match + "」\n" + detail + "\n发「/课表」看效果。");
+            } catch (...) {
+                n.say("修改失败");
+            }
+        }).detach();
+    }
+
+    // ---- /课表 加 名称=xx 星期=3 节次=9 ----
+    static void add_course(const PluginContext& ctx, Notifier n, const std::string& rest) {
+        auto fields = split_fields(rest);
+        if (fields.empty()) {
+            n.say("用法：/课表 加 名称=自习 星期=3 节次=9 连堂=2 周数=1-16 教室=图书馆");
+            return;
+        }
+        CourseEdit tmp;
+        std::vector<std::pair<std::string, std::string>> kvs;
+        for (const auto& f : fields) {
+            std::string k, v;
+            if (!parse_kv(f, &k, &v)) continue;
+            std::string nk = norm_key(k);
+            if (nk.empty()) continue;
+            kvs.push_back({nk, v});
+        }
+        apply_kvs(kvs, &tmp);
+        if (tmp.name.empty()) {
+            n.say("缺少课程名，例如：/课表 加 名称=自习 星期=3 节次=9");
+            return;
+        }
+        if (tmp.weekday <= 0 || tmp.period <= 0) {
+            n.say("需要指定 星期=1~7 与 节次=1~13，例如：/课表 加 名称=自习 星期=3 节次=9");
+            return;
+        }
+
+        int64_t qq = ctx.user_id;
+        UserEdits edits;
+        load_user_edits(qq, &edits);
+
+        hbut::Course c;
+        c.name = tmp.name;
+        c.room = tmp.room;
+        c.teacher = tmp.teacher;
+        c.weekday = tmp.weekday;
+        c.period = tmp.period;
+        c.count = tmp.count > 0 ? tmp.count : 2;
+        std::string weeks_text = tmp.weeks.empty() ? std::string("1-20") : tmp.weeks;
+        c.weeks = hbut::parse_weeks(weeks_text);
+        edits.adds.push_back(c);
+        edits.add_weeks.push_back(weeks_text);
+        if (!save_user_edits(qq, edits)) {
+            n.say("保存失败，检查 data/hbut_jw 目录权限。");
+            return;
+        }
+        n.say("✅ 已添加「" + c.name + "」" + weekday_cn(c.weekday) + " 第" + std::to_string(c.period) +
+              "-" + std::to_string(c.period + c.count - 1) + "节，周次 " + weeks_text +
+              "\n发「/课表」看效果。");
+    }
+
+    // ---- /课表 删 编号 ----
+    static void remove_course(const PluginContext& ctx, Notifier n, const std::string& rest) {
+        std::string sel = trim(rest);
+        if (sel.empty()) {
+            n.say("用法：/课表 删 编号（先用「/课表 课程」看编号）");
+            return;
+        }
+        hbut::Session s;
+        if (!Store::get().get_session(ctx.user_id, &s)) {
+            n.say("还没登录教务系统，先「/课表 扫码」或「/课表 登录 学号 密码」。");
+            return;
+        }
+        int64_t qq = ctx.user_id;
+        std::thread([qq, s, sel, n]() {
+            ThreadGuard guard;
+            try {
+                hbut::Session sess = s;
+                std::vector<hbut::Course> raw;
+                std::string err;
+                bool expired = false;
+                if (!load_raw_courses(sess, &raw, &err, &expired)) {
+                    if (expired) {
+                        Store::get().drop_session(qq);
+                        n.say("教务会话已过期，请重新登录。");
+                    } else {
+                        n.say("读取课程失败：" + err);
+                    }
+                    return;
+                }
+                Store::get().put_session(qq, sess);
+
+                auto names = course_names(raw);
+                std::string match;
+                if (is_all_digits(sel)) {
+                    int idx = atoi(sel.c_str());
+                    if (idx < 1 || idx > (int)names.size()) {
+                        n.say("编号超出范围，发「/课表 课程」查看编号。");
+                        return;
+                    }
+                    match = names[idx - 1];
+                } else {
+                    for (const auto& nm : names) {
+                        if (nm == sel) { match = nm; break; }
+                    }
+                    if (match.empty()) {
+                        n.say("找不到课程「" + sel + "」。");
+                        return;
+                    }
+                }
+
+                UserEdits edits;
+                load_user_edits(qq, &edits);
+                CourseEdit* target = find_or_add_edit(&edits, match);
+                target->hidden = true;
+                if (!save_user_edits(qq, edits)) {
+                    n.say("保存失败，检查 data/hbut_jw 目录权限。");
+                    return;
+                }
+                n.say("✅ 已隐藏「" + match + "」，发「/课表 还原」可恢复。");
+            } catch (...) {
+                n.say("删除失败");
+            }
+        }).detach();
+    }
+
+    // ---- /课表 时间 [节次 HH:MM-HH:MM|重置] ----
+    static void edit_times(Notifier n, const std::string& rest) {
+        auto times = load_period_times();
+        if (rest.empty()) {
+            std::string out = "当前作息时间（改：/课表 时间 3 10:15-11:00）\n";
+            for (const auto& t : times) {
+                out += "第" + std::to_string(t.p) + "节   " + t.start + " - " + t.end + "\n";
+            }
+            out += "重置：/课表 时间 重置";
+            n.say(out);
+            return;
+        }
+        if (rest == "重置" || rest == "reset") {
+            reset_period_times();
+            n.say("作息时间已恢复默认（湖工大 11 节）。");
+            return;
+        }
+
+        auto fields = split_fields(rest);
+        if (fields.size() < 2) {
+            n.say("用法：/课表 时间 3 10:15-11:00");
+            return;
+        }
+        int p = atoi(fields[0].c_str());
+        if (p < 1 || p > 13) {
+            n.say("节次范围 1~13。");
+            return;
+        }
+        std::string range = fields[1];
+        range = replace_all(range, "~", "-");
+        range = replace_all(range, "－", "-");
+        range = replace_all(range, "—", "-");
+        size_t dash = range.find('-');
+        if (dash == std::string::npos) {
+            n.say("时间格式：10:15-11:00");
+            return;
+        }
+        std::string start = trim(range.substr(0, dash));
+        std::string end = trim(range.substr(dash + 1));
+        if (start.find(':') == std::string::npos || end.find(':') == std::string::npos) {
+            n.say("时间格式：10:15-11:00");
+            return;
+        }
+
+        bool found = false;
+        for (auto& t : times) {
+            if (t.p == p) {
+                t.start = start;
+                t.end = end;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            PeriodTime t;
+            t.p = p;
+            t.start = start;
+            t.end = end;
+            times.push_back(t);
+            std::sort(times.begin(), times.end(),
+                      [](const PeriodTime& a, const PeriodTime& b) { return a.p < b.p; });
+        }
+        if (!save_period_times(times)) {
+            n.say("保存失败，检查 data/hbut_jw 目录权限。");
+            return;
+        }
+        n.say("✅ 第" + std::to_string(p) + "节改为 " + start + " - " + end + "，发「/课表」看效果。");
     }
 
     // ---- /课表 诊断 ----

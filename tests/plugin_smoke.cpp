@@ -50,7 +50,20 @@ int main(int argc, char** argv) {
     ctx.async_send_reply = on_send;
     ctx.async_log = on_log;
 
-    const char* cases[] = {"/课表 帮助", "/课表", "/课表 5", "/课表 状态", "/课表 退出", "/hello"};
+    const char* cases[] = {
+        "/课表 帮助",
+        "/课表",
+        "/课表 5",
+        "/课表 状态",
+        "/课表 时间",
+        "/课表 时间 3 10:20-11:05",
+        "/课表 加 名称=自习 星期=3 节次=9 连堂=2 周数=1-16 教室=图书馆",
+        "/课表 加 名称=缺参数",
+        "/课表 改 1 教室=1教-301",
+        "/课表 还原",
+        "/课表 退出",
+        "/hello",
+    };
     for (const char* c : cases) {
         ctx.plain_text = c;
         ctx.raw_message = c;

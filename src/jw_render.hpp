@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-#include "jw_hbut.hpp"
+#include "jw_local.hpp"
 
 namespace jw {
 
@@ -14,8 +14,9 @@ struct TimetableImage {
     std::string date_range;      // 9月7日 - 9月13日
     std::string student_line;    // 姓名 · 学号
     std::string footer;          // 生成时间 / 数据来源
-    int today_weekday = -1;      // 0=周一，-1 表示本周高亮
+    int today_weekday = -1;      // 0=周一，-1 表示本周不高亮
     std::vector<Date> day_dates; // 7 个日期（可为空）
+    std::vector<PeriodTime> period_times;
     std::vector<hbut::Course> courses;
 };
 
