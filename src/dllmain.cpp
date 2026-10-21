@@ -592,10 +592,9 @@ private:
                 }
 
                 n.note("[教务] 学习通扫码成功 qq=" + std::to_string(qq));
-                if (!hbut::chaoxing_bootstrap(hc, &err)) {
-                    n.say("扫码成功，但教务会话建立失败：" + err);
-                    return;
-                }
+                std::string bridge_warn;
+                bool jw_ready = hbut::chaoxing_bootstrap(hc, &bridge_warn);
+                if (!jw_ready) n.note("[教务] 学习通→教务补票未完成：" + bridge_warn);
 
                 hbut::Session s;
                 s.base = hbut::kChaoxingJwBase;
@@ -609,6 +608,7 @@ private:
                     s.jar = hc.jar;
                     Store::get().put_session(qq, s);
                     n.say("学习通登录成功，但读取教务数据失败：" + e2 +
+                          (jw_ready ? "" : "\n（补票提示：" + bridge_warn + "）") +
                           "\n可以稍后再发「/课表」试试，或改用「/课表 登录 学号 密码」。");
                     return;
                 }

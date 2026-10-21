@@ -51,8 +51,9 @@ data\hbut_jw\
 机器人回「✅ 学习通登录成功」→ 之后 `/课表` 即可。
 
 技术路径：`passport2.chaoxing.com` 申请 `uuid/enc` → `createqr` 取图 →
-轮询 `getauthstatus/v2` → 拿到 `.chaoxing.com` 域的票据后进入
-`hbut.jw.chaoxing.com`（学习通教务）。
+轮询 `getauthstatus/v2` 拿到 `.chaoxing.com` 域票据 → 访问 `i.chaoxing.com/base`
+取页面里的 `xxtlogin` 补票链路并逐个请求 → 服务端给 `hbut.jw.chaoxing.com`
+下发 `jw_uf` 短票 → 进入学习通教务。
 
 ### 2）账号密码
 

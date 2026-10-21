@@ -17,6 +17,7 @@ using jw::form_encode;
 using jw::plain_text;
 using jw::replace_all;
 using jw::split;
+using jw::starts_with;
 using jw::to_lower;
 using jw::trim;
 using jw::url_encode;
@@ -233,16 +234,90 @@ QrState chaoxing_qr_poll(jw::HttpClient& hc, const QrTicket& tk, std::string* me
     return QrState::Waiting;
 }
 
+namespace {
+
+// 学习通首页 HTML 里的补票链路（xxtlogin），用于把学习通票据换成教务短票 jw_uf
+void collect_xxtlogin(const std::string& html, std::vector<std::string>* out) {
+    auto push = [out](std::string u) {
+        if (u.empty()) return;
+        for (const auto& e : *out) {
+            if (e == u) return;
+        }
+        out->push_back(u);
+    };
+
+    size_t pos = 0;
+    while ((pos = html.find("xxtlogin", pos)) != std::string::npos) {
+        size_t begin = pos;
+        while (begin > 0 && html[begin - 1] != '"' && html[begin - 1] != '\'' &&
+               html[begin - 1] != ' ' && html[begin - 1] != '(' && html[begin - 1] != '=') {
+            --begin;
+        }
+        size_t end = pos;
+        while (end < html.size() && html[end] != '"' && html[end] != '\'' && html[end] != ' ' &&
+               html[end] != ')' && html[end] != '<') {
+            ++end;
+        }
+        std::string cand = html.substr(begin, end - begin);
+        pos = end;
+
+        if (starts_with(cand, "//")) {
+            cand = "https:" + cand;
+        } else if (starts_with(cand, "http://")) {
+            cand = replace_all(cand, "http://", "https://");
+        } else if (!starts_with(cand, "https://") && !starts_with(cand, "/admin/")) {
+            cand = "https://" + std::string(cand[0] == '/' ? cand.c_str() + 1 : cand.c_str());
+        }
+
+        if (starts_with(cand, "/admin/api/xxtlogin")) {
+            for (const char* host : {"https://vkb.jw.chaoxing.com", "https://hbut.jw.chaoxing.com",
+                                     "https://i.chaoxing.com"}) {
+                push(std::string(host) + cand);
+            }
+            continue;
+        }
+        push(cand);
+    }
+
+    // 兜底：首页拿不到链路时，直接点常用补票入口
+    push("https://vkb.jw.chaoxing.com/admin/api/xxtlogin?loginUrl=https%3A%2F%2Fhbut.jw.chaoxing.com%2Fadmin%2Flogin2%3Frole%3Dxs");
+}
+
+} // namespace
+
 bool chaoxing_bootstrap(jw::HttpClient& hc, std::string* err) {
-    // 学习通票据（.chaoxing.com 域 Cookie）换教务会话：
-    // 直接访问教务首页，服务端会下发 jw_uf 等短票
-    auto r = hc.get(std::string(kChaoxingJwBase) + "/admin", {{"Referer", "https://i.chaoxing.com/"}});
-    if (!r.transport_ok()) {
-        if (err) *err = "无法连接学习通教务：" + r.error;
+    // 学习通票据（.chaoxing.com 域）→ 教务会话：
+    // 先访问 i.chaoxing.com 首页拿到 xxtlogin 补票链路，逐个点一遍，
+    // 服务端才会给 hbut.jw.chaoxing.com 下发 jw_uf 短票。
+    auto base = hc.get("https://i.chaoxing.com/base?t=" + std::to_string(jw::now_ms()),
+                       {{"Referer", "https://i.chaoxing.com/"}});
+    if (!base.transport_ok()) {
+        if (err) *err = "无法连接学习通：" + base.error;
         return false;
     }
-    if (contains(r.final_url, "passport")) {
+    if (contains(base.final_url, "passport2.chaoxing.com/login") ||
+        contains(base.final_url, "passport2.chaoxing.com/mlogin")) {
         if (err) *err = "学习通票据未被接受，请重新扫码";
+        return false;
+    }
+
+    std::vector<std::string> bridges;
+    collect_xxtlogin(base.body, &bridges);
+    for (const auto& u : bridges) {
+        hc.get(u, {{"Referer", "https://i.chaoxing.com/"}});
+    }
+
+    // 预热教务首页 + 菜单接口，让服务端补齐会话
+    hc.get(std::string(kChaoxingJwBase) + "/admin/", {{"Referer", "https://i.chaoxing.com/"}});
+    hc.post_form(std::string(kChaoxingJwBase) + "/admin/getMenuList", std::string(),
+                 {{"X-Requested-With", "XMLHttpRequest"},
+                  {"Origin", kChaoxingJwBase},
+                  {"Referer", std::string(kChaoxingJwBase) + "/admin/"}});
+
+    std::string ck = hc.jar.header_for("hbut.jw.chaoxing.com", "/", true);
+    bool has_jw_uf = contains(ck, "jw_uf=");
+    if (!has_jw_uf) {
+        if (err) *err = "教务短票 jw_uf 未下发";
         return false;
     }
     return true;
