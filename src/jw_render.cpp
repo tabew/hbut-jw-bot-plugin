@@ -8,6 +8,8 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <string>
+#include <vector>
 
 #pragma comment(lib, "gdiplus.lib")
 
@@ -19,46 +21,60 @@ namespace {
 ULONG_PTR g_token = 0;
 bool g_started = false;
 
-// ---------------- 版式参数 ----------------
-constexpr float kWidth = 1420.0f;
-constexpr float kMargin = 28.0f;
-constexpr float kTitleH = 120.0f;
-constexpr float kHeadH = 72.0f;
-constexpr float kLeftW = 100.0f;   // 左侧节次 + 上课时间列宽
-constexpr float kRowH = 74.0f;     // 每小节行高
-constexpr float kFootH = 52.0f;
-constexpr int kMinRows = 11;       // 湖工大默认 11 节
+// ---------------- 版式参数（对齐 mini-hbut 的课表视觉） ----------------
+constexpr float kWidth = 1000.0f;
+constexpr float kMargin = 20.0f;
+constexpr float kInfoH = 100.0f;     // 顶部信息条
+constexpr float kDateH = 92.0f;      // 日期头
+constexpr float kAxisW = 92.0f;      // 左侧时间轴宽度
+constexpr float kRowH = 100.0f;      // 每节行高
+constexpr float kFootH = 40.0f;
+constexpr int kMinRows = 11;
 constexpr int kMaxRows = 13;
 
-struct Palette {
-    Color fill;
-    Color accent;
+// mini-hbut constants.ts 的 courseThemes（12 组）
+struct CourseColor {
+    Color bg;
     Color text;
-    Color sub;
+    Color border;
 };
-
-const Palette kPalette[] = {
-    {Color(255, 232, 240, 254), Color(255, 66, 133, 244), Color(255, 21, 62, 120), Color(255, 66, 103, 160)},
-    {Color(255, 252, 233, 230), Color(255, 234, 88, 66), Color(255, 122, 44, 26), Color(255, 176, 92, 76)},
-    {Color(255, 230, 244, 234), Color(255, 52, 168, 83), Color(255, 22, 96, 55), Color(255, 74, 140, 98)},
-    {Color(255, 254, 247, 224), Color(255, 232, 170, 20), Color(255, 122, 82, 8), Color(255, 170, 128, 52)},
-    {Color(255, 243, 232, 253), Color(255, 145, 86, 220), Color(255, 75, 40, 130), Color(255, 126, 96, 172)},
-    {Color(255, 228, 247, 251), Color(255, 30, 154, 176), Color(255, 14, 90, 104), Color(255, 62, 132, 146)},
-    {Color(255, 253, 237, 243), Color(255, 214, 78, 128), Color(255, 133, 33, 76), Color(255, 178, 96, 128)},
-    {Color(255, 238, 241, 245), Color(255, 95, 110, 130), Color(255, 55, 65, 81), Color(255, 108, 118, 136)},
-    {Color(255, 237, 248, 239), Color(255, 47, 140, 61), Color(255, 25, 92, 40), Color(255, 96, 148, 106)},
-    {Color(255, 238, 244, 255), Color(255, 51, 92, 203), Color(255, 30, 58, 140), Color(255, 104, 124, 180)},
+const CourseColor kThemes[] = {
+    {Color(255, 231, 244, 255), Color(255, 15, 93, 168), Color(255, 114, 185, 255)},
+    {Color(255, 255, 240, 232), Color(255, 203, 79, 47), Color(255, 255, 179, 144)},
+    {Color(255, 239, 233, 255), Color(255, 95, 82, 207), Color(255, 184, 170, 255)},
+    {Color(255, 255, 244, 219), Color(255, 190, 122, 7), Color(255, 239, 196, 101)},
+    {Color(255, 255, 234, 242), Color(255, 195, 63, 115), Color(255, 243, 168, 196)},
+    {Color(255, 232, 250, 245), Color(255, 17, 127, 103), Color(255, 138, 220, 196)},
+    {Color(255, 232, 239, 255), Color(255, 51, 92, 203), Color(255, 158, 180, 255)},
+    {Color(255, 255, 241, 245), Color(255, 182, 63, 88), Color(255, 240, 172, 187)},
+    {Color(255, 237, 248, 239), Color(255, 47, 140, 61), Color(255, 157, 215, 167)},
+    {Color(255, 232, 249, 255), Color(255, 0, 120, 147), Color(255, 132, 214, 236)},
+    {Color(255, 244, 237, 255), Color(255, 117, 72, 193), Color(255, 198, 173, 241)},
+    {Color(255, 255, 242, 226), Color(255, 176, 92, 22), Color(255, 239, 182, 127)},
 };
-constexpr int kPaletteCount = (int)(sizeof(kPalette) / sizeof(kPalette[0]));
+constexpr int kThemeCount = (int)(sizeof(kThemes) / sizeof(kThemes[0]));
 
-Palette palette_for(const std::string& key) {
+CourseColor theme_for(const std::string& key) {
     unsigned hash = 2166136261u;
     for (unsigned char c : key) {
         hash ^= c;
         hash *= 16777619u;
     }
-    return kPalette[hash % kPaletteCount];
+    return kThemes[hash % kThemeCount];
 }
+
+// 面板配色（mini-hbut 的 grid 用色）
+const Color kPageBg(255, 255, 255, 255);
+const Color kAxisBg(255, 249, 250, 251);
+const Color kLineSoft(255, 240, 240, 240);
+const Color kGridDash(255, 229, 231, 235);
+const Color kTextStrong(255, 17, 24, 39);
+const Color kTextMuted(255, 156, 163, 175);
+const Color kAxisTimeStart(255, 148, 163, 184);
+const Color kAxisTimeEnd(255, 203, 213, 225);
+const Color kAxisPeriod(255, 51, 65, 85);
+const Color kTodayBg(255, 219, 234, 254);
+const Color kTodayText(255, 37, 99, 235);
 
 int encoder_clsid(const WCHAR* mime, CLSID* clsid) {
     UINT num = 0, size = 0;
@@ -100,89 +116,107 @@ void fill_round_rect(Graphics& g, const RectF& rc, float radius, const Color& fi
     g.FillPath(&brush, &path);
 }
 
+void stroke_round_rect(Graphics& g, const RectF& rc, float radius, const Color& color, float width) {
+    GraphicsPath path;
+    float d = radius * 2;
+    if (d > rc.Height) d = rc.Height;
+    if (d > rc.Width) d = rc.Width;
+    // 内缩半个线宽，避免描边糊到相邻格
+    RectF r(rc.X + width / 2, rc.Y + width / 2, rc.Width - width, rc.Height - width);
+    d = radius * 2;
+    if (d > r.Height) d = r.Height;
+    if (d > r.Width) d = r.Width;
+    path.AddArc(r.X, r.Y, d, d, 180.0f, 90.0f);
+    path.AddArc(r.X + r.Width - d, r.Y, d, d, 270.0f, 90.0f);
+    path.AddArc(r.X + r.Width - d, r.Y + r.Height - d, d, d, 0.0f, 90.0f);
+    path.AddArc(r.X, r.Y + r.Height - d, d, d, 90.0f, 90.0f);
+    path.CloseFigure();
+    Pen pen(color, width);
+    g.DrawPath(&pen, &path);
+}
+
 void draw_text(Graphics& g, FontFamily* fam, const std::wstring& text, float size, int style,
                const Color& color, const RectF& rc, StringAlignment align = StringAlignmentNear,
-               StringAlignment line = StringAlignmentCenter, bool wrap = false) {
+               StringAlignment line = StringAlignmentCenter, bool nowrap = true) {
     Font font(fam, size, style, UnitPixel);
     SolidBrush brush(color);
     StringFormat fmt;
     fmt.SetAlignment(align);
     fmt.SetLineAlignment(line);
     fmt.SetTrimming(StringTrimmingEllipsisCharacter);
-    if (!wrap) fmt.SetFormatFlags(StringFormatFlagsNoWrap);
+    if (nowrap) fmt.SetFormatFlags(StringFormatFlagsNoWrap);
     g.DrawString(text.c_str(), (INT)text.size(), &font, rc, &fmt, &brush);
 }
 
-// 单行文字（自动省略号），用于课程块内的教室 / 教师
-void draw_single_line(Graphics& g, FontFamily* fam, const std::string& text, float size,
-                      const Color& color, const RectF& rc) {
-    if (text.empty() || rc.Height < size * 0.8f) return;
-    Font font(fam, size, FontStyleRegular, UnitPixel);
-    SolidBrush brush(color);
-    StringFormat fmt;
-    fmt.SetAlignment(StringAlignmentNear);
-    fmt.SetLineAlignment(StringAlignmentNear);
-    fmt.SetTrimming(StringTrimmingEllipsisCharacter);
-    fmt.SetFormatFlags(StringFormatFlagsNoWrap);
-    std::wstring w = wfromu8(text);
-    g.DrawString(w.c_str(), (INT)w.size(), &font, rc, &fmt, &brush);
-}
-
-// 课程块：所有内容先 SetClip，再从可用高度里按「名称 → 教室 → 教师」优先级排布，
-// 保证任何长度都不会画出格子。
+// 课程卡：迷你圆角卡片 + 居中排版，内容严格裁剪在卡片内（对齐 mini-hbut course-card）
 void draw_course_card(Graphics& g, FontFamily* fam, const hbut::Course& c, const RectF& rc) {
-    if (rc.Width < 24 || rc.Height < 24) return;
+    if (rc.Width < 26 || rc.Height < 26) return;
 
-    Palette pal = palette_for(c.name);
-    fill_round_rect(g, rc, 10.0f, pal.fill);
-    fill_round_rect(g, RectF(rc.X, rc.Y + 6, 4.0f, rc.Height - 12), 2.0f, pal.accent);
+    CourseColor cc = theme_for(c.name);
+    fill_round_rect(g, rc, 14.0f, cc.bg);
+    stroke_round_rect(g, rc, 14.0f, cc.border, 1.2f);
 
-    g.SetClip(RectF(rc.X + 1, rc.Y + 1, rc.Width - 2, rc.Height - 2));
+    g.SetClip(RectF(rc.X + 1.5f, rc.Y + 1.5f, rc.Width - 3.0f, rc.Height - 3.0f));
 
-    const float x = rc.X + 10.0f;
-    const float w = rc.Width - 17.0f;
-    const float top = rc.Y + 6.0f;
-    const float bottom = rc.Y + rc.Height - 5.0f;
+    const bool narrow = rc.Width < 100.0f;
+    const float pad = narrow ? 5.0f : 8.0f;
+    const float innerW = rc.Width - pad * 2;
+    const float nameSize = narrow ? 15.5f : 19.0f;
+    const float nameLineH = narrow ? 21.0f : 26.0f;
+    const float infoSize = narrow ? 11.0f : 14.0f;
+    const float infoLineH = narrow ? 15.0f : 18.0f;
 
-    // 窄格（同格多课分栏后）自动缩小字号，尽量多显示几个字
-    const bool narrow = rc.Width < 110.0f;
-    const float nameSize = narrow ? 13.5f : 15.5f;
-    const float nameLineH = narrow ? 18.0f : 21.0f;
-    const float infoSize = narrow ? 11.0f : 12.5f;
-    const float infoH = narrow ? 14.0f : 16.0f;
+    StringFormat center;
+    center.SetAlignment(StringAlignmentCenter);
+    center.SetLineAlignment(StringAlignmentCenter);
+    center.SetTrimming(StringTrimmingEllipsisCharacter);
+    center.SetFormatFlags(StringFormatFlagsLineLimit);
 
-    // ---- 课程名：最多两行 ----
+    // 名称：最多两行
     Font nameFont(fam, nameSize, FontStyleBold, UnitPixel);
-    StringFormat nameFmt;
-    nameFmt.SetAlignment(StringAlignmentNear);
-    nameFmt.SetLineAlignment(StringAlignmentNear);
-    nameFmt.SetTrimming(StringTrimmingEllipsisCharacter);
-    nameFmt.SetFormatFlags(StringFormatFlagsLineLimit);
-    SolidBrush nameBrush(pal.text);
-
+    SolidBrush nameBrush(cc.text);
     std::wstring wname = wfromu8(c.name);
     float nameH = nameLineH;
     {
         RectF bound;
-        g.MeasureString(wname.c_str(), (INT)wname.size(), &nameFont, RectF(0, 0, w, 400), &nameFmt,
-                        &bound);
+        g.MeasureString(wname.c_str(), (INT)wname.size(), &nameFont, RectF(0, 0, innerW, 400),
+                        &center, &bound);
         if (bound.Height > nameLineH * 1.35f) nameH = nameLineH * 2;
     }
-    if (nameH > bottom - top) nameH = bottom - top;
-    g.DrawString(wname.c_str(), (INT)wname.size(), &nameFont, RectF(x, top, w, nameH), &nameFmt,
-                 &nameBrush);
+    const float maxNameH = rc.Height - pad * 2 - infoLineH; // 至少给教室留一行
+    if (nameH > maxNameH) nameH = std::max(nameLineH, maxNameH);
 
-    float y = top + nameH + (narrow ? 2.0f : 3.0f);
-
-    // ---- 教室 ----
+    // 教室 / 教师（按空间取舍）
     std::string room = !c.room.empty() ? c.room : c.building;
-    if (!room.empty() && bottom - y >= infoH) {
-        draw_single_line(g, fam, room, infoSize, pal.sub, RectF(x, y, w, infoH));
-        y += infoH + 0.5f;
+    bool showRoom = !room.empty();
+    bool showTeacher = !c.teacher.empty();
+    float infoH = 0.0f;
+    if (showRoom) infoH += infoLineH;
+    if (showTeacher && rc.Height - pad * 2 - nameH >= infoLineH * 2) infoH += infoLineH;
+    else showTeacher = false;
+
+    float total = nameH + infoH;
+    float y = rc.Y + (rc.Height - total) / 2.0f;
+
+    g.DrawString(wname.c_str(), (INT)wname.size(), &nameFont, RectF(rc.X + pad, y, innerW, nameH),
+                 &center, &nameBrush);
+    y += nameH;
+
+    Color subColor(255, cc.text.GetR(), cc.text.GetG(), cc.text.GetB());
+    if (showRoom) {
+        Font rf(fam, infoSize, FontStyleRegular, UnitPixel);
+        SolidBrush rb(subColor);
+        std::wstring wroom = wfromu8(room);
+        g.DrawString(wroom.c_str(), (INT)wroom.size(), &rf,
+                     RectF(rc.X + pad, y, innerW, infoLineH), &center, &rb);
+        y += infoLineH;
     }
-    // ---- 教师 ----
-    if (!c.teacher.empty() && bottom - y >= infoH - 1.0f) {
-        draw_single_line(g, fam, c.teacher, infoSize - 1.0f, pal.sub, RectF(x, y, w, infoH - 1.0f));
+    if (showTeacher) {
+        Font tf(fam, infoSize - 0.5f, FontStyleRegular, UnitPixel);
+        SolidBrush tb(Color(205, cc.text.GetR(), cc.text.GetG(), cc.text.GetB()));
+        std::wstring wt = wfromu8(c.teacher);
+        g.DrawString(wt.c_str(), (INT)wt.size(), &tf, RectF(rc.X + pad, y, innerW, infoLineH),
+                     &center, &tb);
     }
 
     g.ResetClip();
@@ -210,7 +244,7 @@ bool render_timetable_png(const TimetableImage& data, const std::string& out_pat
         return false;
     }
 
-    // 行数：至少 11 节，课程超出则自动加行
+    // ---- 行数：至少 11 节，课程超出自动加行 ----
     int rows = kMinRows;
     for (const auto& c : data.courses) {
         int last = c.period + std::max(1, c.count) - 1;
@@ -218,17 +252,15 @@ bool render_timetable_png(const TimetableImage& data, const std::string& out_pat
     }
     if (rows > kMaxRows) rows = kMaxRows;
 
-    const float gridTop = kMargin + kTitleH;
-    const float headTop = gridTop;
-    const float bodyTop = gridTop + kHeadH;
     const float gridLeft = kMargin;
-    const float colLeft = gridLeft + kLeftW;
-    const float gridW = kWidth - kMargin * 2 - kLeftW;
+    const float axisRight = gridLeft + kAxisW;
+    const float dateTop = kMargin + kInfoH;
+    const float bodyTop = dateTop + kDateH;
+    const float gridW = kWidth - kMargin * 2 - kAxisW;
     const float colW = gridW / 7.0f;
     const float height = bodyTop + kRowH * rows + kFootH + kMargin;
 
-    // ---- 同格重叠：先算每门课占第几列，再按「时间簇」分配宽度 ----
-    // 只有真正互相重叠的那几门课才分栏，其余课程保持整列宽度。
+    // ---- 同格重叠：时间簇分栏（只有真正重叠的课程才变窄） ----
     struct Placement {
         const hbut::Course* course = nullptr;
         int day = 0;
@@ -257,7 +289,6 @@ bool render_timetable_png(const TimetableImage& data, const std::string& out_pat
         }
         if (items.empty()) continue;
 
-        // 贪心分列：找第一个不与已占区间冲突的列
         std::vector<std::vector<std::pair<int, int>>> columns;
         for (auto& it : items) {
             int end = it.r0 + it.span - 1;
@@ -281,7 +312,6 @@ bool render_timetable_png(const TimetableImage& data, const std::string& out_pat
             it.col = col;
         }
 
-        // 并查集：时间重叠的课程属于同一个簇
         std::vector<int> parent(items.size());
         for (size_t i = 0; i < parent.size(); ++i) parent[i] = (int)i;
         std::function<int(int)> find = [&](int x) {
@@ -304,12 +334,11 @@ bool render_timetable_png(const TimetableImage& data, const std::string& out_pat
         std::map<int, int> cluster_cols;
         for (size_t i = 0; i < items.size(); ++i) {
             int root = find((int)i);
-            auto it2 = cluster_cols.find(root);
-            if (it2 == cluster_cols.end() || it2->second < items[i].col + 1) {
+            auto itc = cluster_cols.find(root);
+            if (itc == cluster_cols.end() || itc->second < items[i].col + 1) {
                 cluster_cols[root] = items[i].col + 1;
             }
         }
-
         for (size_t i = 0; i < items.size(); ++i) {
             Placement p;
             p.course = items[i].c;
@@ -322,6 +351,7 @@ bool render_timetable_png(const TimetableImage& data, const std::string& out_pat
         }
     }
 
+    // ---- 画布 ----
     Bitmap bmp((INT)kWidth, (INT)height, PixelFormat32bppARGB);
     Graphics g(&bmp);
     g.SetSmoothingMode(SmoothingModeAntiAlias);
@@ -329,8 +359,8 @@ bool render_timetable_png(const TimetableImage& data, const std::string& out_pat
     g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
     g.SetPixelOffsetMode(PixelOffsetModeHalf);
 
-    SolidBrush bg(Color(255, 247, 248, 250));
-    g.FillRectangle(&bg, RectF(0, 0, kWidth, height));
+    SolidBrush pageBg(kPageBg);
+    g.FillRectangle(&pageBg, RectF(0, 0, kWidth, height));
 
     std::unique_ptr<FontFamily> fam(pick_family());
     if (!fam) {
@@ -338,70 +368,97 @@ bool render_timetable_png(const TimetableImage& data, const std::string& out_pat
         return false;
     }
 
-    // ---- 顶部标题区 ----
-    fill_round_rect(g, RectF(kMargin, kMargin, kWidth - kMargin * 2, kTitleH - 12), 14.0f,
-                    Color(255, 255, 255, 255));
-    draw_text(g, fam.get(), wfromu8("湖工大 · 课表"), 30.0f, FontStyleBold, Color(255, 24, 32, 44),
-              RectF(kMargin + 26, kMargin + 12, 420, 40));
+    // ---- 顶部信息条 ----
+    draw_text(g, fam.get(), wfromu8("湖工大 · 课表"), 26.0f, FontStyleBold, kTextStrong,
+              RectF(kMargin, kMargin + 8, 420, 36));
 
-    std::string line2 = data.semester_label;
+    std::string sub = data.semester_label;
     if (!data.student_line.empty()) {
-        if (!line2.empty()) line2 += "  ·  ";
-        line2 += data.student_line;
+        if (!sub.empty()) sub += "   ";
+        sub += data.student_line;
     }
-    draw_text(g, fam.get(), wfromu8(line2), 15.5f, FontStyleRegular, Color(255, 96, 106, 122),
-              RectF(kMargin + 26, kMargin + 54, 760, 24));
+    draw_text(g, fam.get(), wfromu8(sub), 13.0f, FontStyleRegular, kTextMuted,
+              RectF(kMargin, kMargin + 48, 700, 22));
 
-    std::string line3 = data.date_range;
-    if (data.total_weeks > 0) {
-        if (!line3.empty()) line3 += "  ·  ";
-        line3 += "共 " + std::to_string(data.total_weeks) + " 周";
-    }
-    if (!line3.empty()) {
-        draw_text(g, fam.get(), wfromu8(line3), 13.5f, FontStyleRegular, Color(255, 148, 156, 168),
-                  RectF(kMargin + 26, kMargin + 78, 760, 20));
+    if (!data.date_range.empty()) {
+        draw_text(g, fam.get(), wfromu8(data.date_range), 13.0f, FontStyleRegular, kTextMuted,
+                  RectF(kMargin, kMargin + 72, 700, 20));
     }
 
     {
         char buf[64];
         snprintf(buf, sizeof(buf), "第 %d 周", data.week);
-        RectF badge(kWidth - kMargin - 24 - 136, kMargin + 16, 136, 42);
-        fill_round_rect(g, badge, 21.0f, Color(255, 232, 240, 254));
-        draw_text(g, fam.get(), wfromu8(buf), 19.0f, FontStyleBold, Color(255, 30, 90, 180), badge,
+        std::string weekText = buf;
+        if (data.total_weeks > 0) weekText += " / 共 " + std::to_string(data.total_weeks) + " 周";
+        RectF badge(kWidth - kMargin - 200, kMargin + 12, 200, 38);
+        fill_round_rect(g, badge, 18.0f, Color(255, 239, 246, 255));
+        draw_text(g, fam.get(), wfromu8(weekText), 15.0f, FontStyleBold, kTodayText, badge,
                   StringAlignmentCenter);
     }
 
-    // ---- 表头：星期 + 日期 ----
+    // ---- 日期头 ----
+    SolidBrush axisBg(kAxisBg);
+    g.FillRectangle(&axisBg, RectF(gridLeft, dateTop, kAxisW, kDateH));
+
+    // 月列
+    if ((int)data.day_dates.size() >= 1) {
+        const Date& first = data.day_dates[0];
+        char mbuf[16];
+        snprintf(mbuf, sizeof(mbuf), "%d月", first.m);
+        draw_text(g, fam.get(), wfromu8(mbuf), 21.0f, FontStyleBold, kTextStrong,
+                  RectF(gridLeft, dateTop + 22, kAxisW, 28), StringAlignmentCenter);
+        draw_text(g, fam.get(), wfromu8("本周"), 12.0f, FontStyleRegular, kTextMuted,
+                  RectF(gridLeft, dateTop + 52, kAxisW, 18), StringAlignmentCenter);
+    }
+
     static const char* kWeekNames[] = {"周一", "周二", "周三", "周四", "周五", "周六", "周日"};
     for (int d = 0; d < 7; ++d) {
-        RectF cell(colLeft + d * colW + 4, headTop, colW - 8, kHeadH - 10);
+        float x = axisRight + d * colW;
         bool is_today = (data.today_weekday == d);
-        if (is_today) fill_round_rect(g, cell, 12.0f, Color(255, 232, 240, 254));
-        draw_text(g, fam.get(), wfromu8(kWeekNames[d]), 17.0f, FontStyleBold,
-                  is_today ? Color(255, 30, 90, 180) : Color(255, 60, 68, 80),
-                  RectF(cell.X, cell.Y + 9, cell.Width, 24), StringAlignmentCenter);
-        if ((int)data.day_dates.size() > d) {
-            const Date& dd = data.day_dates[(size_t)d];
-            char buf[24];
-            snprintf(buf, sizeof(buf), "%d/%d", dd.m, dd.d);
-            draw_text(g, fam.get(), wfromu8(buf), 12.5f, FontStyleRegular,
-                      is_today ? Color(255, 30, 90, 180) : Color(255, 148, 156, 168),
-                      RectF(cell.X, cell.Y + 34, cell.Width, 20), StringAlignmentCenter);
+        RectF cell(x + 2, dateTop + 4, colW - 4, kDateH - 10);
+        if (is_today) {
+            fill_round_rect(g, cell, 10.0f, kTodayBg);
         }
+        char dbuf[16];
+        if ((int)data.day_dates.size() > d) {
+            snprintf(dbuf, sizeof(dbuf), "%d", data.day_dates[(size_t)d].d);
+        } else {
+            snprintf(dbuf, sizeof(dbuf), "%d", d + 1);
+        }
+        draw_text(g, fam.get(), wfromu8(dbuf), 24.0f, is_today ? FontStyleBold : FontStyleRegular,
+                  is_today ? kTodayText : kTextStrong, RectF(x, dateTop + 14, colW, 30),
+                  StringAlignmentCenter);
+        draw_text(g, fam.get(), wfromu8(kWeekNames[d]), 13.5f, FontStyleRegular,
+                  is_today ? kTodayText : kTextMuted, RectF(x, dateTop + 48, colW, 20),
+                  StringAlignmentCenter);
     }
-    // 左上角：节次 / 时间
-    draw_text(g, fam.get(), wfromu8("节次"), 12.0f, FontStyleRegular, Color(255, 168, 176, 188),
-              RectF(gridLeft, headTop + 12, kLeftW - 12, 18), StringAlignmentCenter);
-    draw_text(g, fam.get(), wfromu8("时间"), 12.0f, FontStyleRegular, Color(255, 168, 176, 188),
-              RectF(gridLeft, headTop + 32, kLeftW - 12, 18), StringAlignmentCenter);
 
-    // ---- 左侧节次 + 上课时间 ----
+    // 日期头下边线
+    {
+        Pen pen(kLineSoft, 1.0f);
+        g.DrawLine(&pen, PointF(gridLeft, bodyTop), PointF(gridLeft + kAxisW + gridW, bodyTop));
+    }
+
+    // ---- 今天列淡蓝底 ----
+    if (data.today_weekday >= 0 && data.today_weekday < 7) {
+        SolidBrush todayBg(Color(46, 219, 234, 254));
+        float x = axisRight + data.today_weekday * colW;
+        g.FillRectangle(&todayBg, RectF(x, bodyTop, colW, kRowH * rows));
+        Pen edge(Color(30, 37, 99, 235), 1.0f);
+        g.DrawLine(&edge, PointF(x, bodyTop), PointF(x, bodyTop + kRowH * rows));
+        g.DrawLine(&edge, PointF(x + colW, bodyTop), PointF(x + colW, bodyTop + kRowH * rows));
+    }
+
+    // ---- 左侧时间轴（时间 / 节次 / 时间） ----
+    g.FillRectangle(&axisBg, RectF(gridLeft, bodyTop, kAxisW, kRowH * rows));
+    {
+        Pen right(kLineSoft, 1.0f);
+        g.DrawLine(&right, PointF(axisRight, bodyTop), PointF(axisRight, bodyTop + kRowH * rows));
+    }
+
     const std::vector<PeriodTime>& times = data.period_times;
     for (int r = 0; r < rows; ++r) {
         float y = bodyTop + r * kRowH;
-        draw_text(g, fam.get(), wfromu8(std::to_string(r + 1)), 15.0f, FontStyleBold,
-                  Color(255, 120, 130, 145), RectF(gridLeft, y + 5, kLeftW - 12, 20),
-                  StringAlignmentCenter);
         const PeriodTime* t = nullptr;
         for (const auto& item : times) {
             if (item.p == r + 1) {
@@ -410,48 +467,49 @@ bool render_timetable_png(const TimetableImage& data, const std::string& out_pat
             }
         }
         if (t) {
-            draw_text(g, fam.get(), wfromu8(t->start), 10.5f, FontStyleRegular,
-                      Color(255, 152, 160, 172), RectF(gridLeft, y + 27, kLeftW - 12, 14),
-                      StringAlignmentCenter);
-            draw_text(g, fam.get(), wfromu8(t->end), 10.5f, FontStyleRegular,
-                      Color(255, 176, 183, 194), RectF(gridLeft, y + 43, kLeftW - 12, 14),
-                      StringAlignmentCenter);
+            draw_text(g, fam.get(), wfromu8(t->start), 12.0f, FontStyleRegular, kAxisTimeStart,
+                      RectF(gridLeft, y + 18, kAxisW - 6, 16), StringAlignmentCenter);
+        }
+        draw_text(g, fam.get(), wfromu8(std::to_string(r + 1)), 20.0f, FontStyleBold, kAxisPeriod,
+                  RectF(gridLeft, y + 37, kAxisW - 6, 26), StringAlignmentCenter);
+        if (t) {
+            draw_text(g, fam.get(), wfromu8(t->end), 12.0f, FontStyleRegular, kAxisTimeEnd,
+                      RectF(gridLeft, y + 64, kAxisW - 6, 16), StringAlignmentCenter);
         }
     }
 
-    // ---- 网格 ----
-    Pen line(Color(255, 231, 234, 240), 1.0f);
-    for (int r = 0; r <= rows; ++r) {
-        float y = bodyTop + r * kRowH;
-        g.DrawLine(&line, PointF(gridLeft, y), PointF(colLeft + gridW, y));
-    }
-    for (int d = 0; d <= 7; ++d) {
-        float x = colLeft + d * colW;
-        g.DrawLine(&line, PointF(x, headTop + kHeadH - 6), PointF(x, bodyTop + kRowH * rows));
+    // ---- 横向虚线（8px 实 / 8px 空，同 mini-hbut 的 dashed 视觉） ----
+    {
+        Pen dash(kGridDash, 1.0f);
+        REAL pattern[] = {8.0f, 8.0f};
+        dash.SetDashPattern(pattern, 2);
+        for (int r = 1; r < rows; ++r) {
+            float y = bodyTop + r * kRowH;
+            g.DrawLine(&dash, PointF(axisRight, y), PointF(axisRight + gridW, y));
+        }
     }
 
-    // ---- 课程块 ----
+    // ---- 课程卡 ----
     for (const auto& p : placements) {
-        const float gap = 5.0f;
+        const float gap = 3.0f;
         float dayW = colW - gap * 2;
         int cols = std::max(1, p.col_count);
         float subW = dayW / cols;
-        float x = colLeft + p.day * colW + gap + subW * p.col;
-        float y = bodyTop + p.row * kRowH + 4.0f;
-        RectF rc(x, y, subW - (cols > 1 ? 3.0f : 0.0f), p.span * kRowH - 9.0f);
+        float x = axisRight + p.day * colW + gap + subW * p.col;
+        float y = bodyTop + p.row * kRowH + 3.0f;
+        RectF rc(x, y, subW - (cols > 1 ? 2.0f : 0.0f), p.span * kRowH - 6.0f);
         draw_course_card(g, fam.get(), *p.course, rc);
     }
 
     if (data.courses.empty()) {
-        draw_text(g, fam.get(), wfromu8("本周没有排课，好好休息 :)"), 18.0f, FontStyleRegular,
-                  Color(255, 160, 168, 180), RectF(colLeft, bodyTop + kRowH * 3, gridW, 40),
-                  StringAlignmentCenter);
+        draw_text(g, fam.get(), wfromu8("本周没有排课  :)"), 19.0f, FontStyleRegular, kTextMuted,
+                  RectF(axisRight, bodyTop + kRowH * 3, gridW, 36), StringAlignmentCenter);
     }
 
     // ---- 页脚 ----
-    draw_text(g, fam.get(), wfromu8(data.footer), 13.0f, FontStyleRegular, Color(255, 165, 172, 184),
-              RectF(kMargin + 4, bodyTop + kRowH * rows + 14, kWidth - kMargin * 2, 24),
-              StringAlignmentNear);
+    draw_text(g, fam.get(), wfromu8(data.footer), 12.5f, FontStyleRegular, kTextMuted,
+              RectF(kMargin, bodyTop + kRowH * rows + 10, kWidth - kMargin * 2, 22),
+              StringAlignmentCenter);
 
     // ---- 保存 ----
     CLSID png_clsid;
