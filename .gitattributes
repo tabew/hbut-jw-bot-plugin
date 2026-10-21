@@ -1,0 +1,7 @@
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.md text eol=lf
+*.vcxproj text eol=lf

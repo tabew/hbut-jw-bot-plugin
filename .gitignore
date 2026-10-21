@@ -1,0 +1,24 @@
+# 构建产物
+obj/
+*.obj
+*.exp
+*.lib
+*.pdb
+*.ilk
+*.res
+*.tlog
+*.log
+
+# 本地调试程序与产物
+preview.exe
+net_probe.exe
+plugin_smoke.exe
+tests/preview.png
+tests/qr.png
+tests/captcha.png
+tests/captcha.jpg
+
+# 运行时数据（登录态 Cookie，切勿提交）
+data/
+users/
+*.tmp
