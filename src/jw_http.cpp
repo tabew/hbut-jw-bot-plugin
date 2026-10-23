@@ -234,38 +234,47 @@ std::string CookieJar::to_json() const {
 }
 
 bool CookieJar::from_json(const std::string& text) {
-    // 极简解析：足够读回自己写出的结构，避免依赖 JSON 库
+    // 逐个 {...} 对象解析，字段按 key 查找——不能假设键顺序：
+    // 存盘走的是 simplejson，对象键是字典序（d/e/h/n/p/s/v），
+    // 早先按固定顺序读会把所有 Cookie 读丢，重启后登录态全失效。
     cookies_.clear();
     size_t pos = 0;
     while (true) {
-        size_t n = text.find("\"n\":\"", pos);
-        if (n == std::string::npos) break;
-        Cookie ck;
-        auto grab = [&](const char* key, size_t start, std::string* out) -> size_t {
+        size_t s = text.find('{', pos);
+        if (s == std::string::npos) break;
+        size_t e = text.find('}', s);
+        if (e == std::string::npos) break;
+        std::string obj = text.substr(s, e - s + 1);
+        pos = e + 1;
+
+        auto get_str = [&obj](const char* key) -> std::string {
             std::string k = std::string("\"") + key + "\":\"";
-            size_t p = text.find(k, start);
-            if (p == std::string::npos) return std::string::npos;
+            size_t p = obj.find(k);
+            if (p == std::string::npos) return std::string();
             p += k.size();
-            size_t e = text.find('"', p);
-            if (e == std::string::npos) return std::string::npos;
-            *out = text.substr(p, e - p);
-            return e;
+            size_t q = obj.find('"', p);
+            if (q == std::string::npos) return std::string();
+            return obj.substr(p, q - p);
         };
-        size_t cursor = n;
-        if (grab("n", cursor, &ck.name) == std::string::npos) break;
-        if (grab("v", cursor, &ck.value) == std::string::npos) break;
-        if (grab("d", cursor, &ck.domain) == std::string::npos) break;
-        if (grab("p", cursor, &ck.path) == std::string::npos) break;
-        size_t epos = text.find("\"e\":", cursor);
-        if (epos == std::string::npos) break;
-        ck.expires = atoll(text.c_str() + epos + 4);
-        size_t hpos = text.find("\"h\":", epos);
-        ck.host_only = (hpos != std::string::npos && text.compare(hpos + 4, 1, "1") == 0);
-        size_t spos = text.find("\"s\":", hpos == std::string::npos ? epos : hpos);
-        ck.secure = (spos != std::string::npos && text.compare(spos + 4, 1, "1") == 0);
-        cookies_.push_back(ck);
-        pos = spos == std::string::npos ? epos : spos;
-        pos += 1;
+        auto get_num = [&obj](const char* key) -> long long {
+            std::string k = std::string("\"") + key + "\":";
+            size_t p = obj.find(k);
+            if (p == std::string::npos) return 0;
+            return atoll(obj.c_str() + p + k.size());
+        };
+
+        Cookie ck;
+        ck.name = get_str("n");
+        ck.value = get_str("v");
+        ck.domain = get_str("d");
+        ck.path = get_str("p");
+        if (ck.path.empty()) ck.path = "/";
+        ck.expires = get_num("e");
+        ck.host_only = get_num("h") != 0;
+        ck.secure = get_num("s") != 0;
+        if (!ck.name.empty()) cookies_.push_back(ck);
+
+        if (pos >= text.size()) break;
     }
     return !cookies_.empty();
 }

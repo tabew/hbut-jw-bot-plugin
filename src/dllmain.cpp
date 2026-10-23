@@ -16,6 +16,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -138,7 +139,38 @@ public:
         return true;
     }
 
+    // ---- 隐私：默认允许他人 @ 查看，本人可关闭 ----
+    bool is_hidden(int64_t qq) {
+        std::lock_guard<std::mutex> lk(mu_);
+        return hidden_.count(qq) > 0;
+    }
+
+    void set_hidden(int64_t qq, bool hidden) {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (hidden) hidden_.insert(qq);
+            else hidden_.erase(qq);
+        }
+        persist_privacy();
+    }
+
+    void load_privacy() {
+        std::string path = data_dir("hbut_jw") + "/privacy.json";
+        auto v = simplejson::Value::parse(read_file_text(path));
+        if (!v.is_object()) return;
+        const auto& arr = v["hidden"];
+        if (!arr.is_array()) return;
+        std::lock_guard<std::mutex> lk(mu_);
+        for (size_t i = 0; i < arr.size(); ++i) {
+            const auto& item = arr[i];
+            int64_t qq = item.is_number() ? item.get<int64_t>()
+                                          : atoll(item.get<std::string>().c_str());
+            if (qq > 0) hidden_.insert(qq);
+        }
+    }
+
     void load_all() {
+        load_privacy();
         std::string dir = data_dir("hbut_jw/users");
         std::error_code ec;
         if (!std::filesystem::exists(std::filesystem::u8path(dir), ec)) return;
@@ -171,6 +203,28 @@ private:
         return data_dir("hbut_jw/users") + "/" + std::to_string(qq) + ".json";
     }
 
+    void persist_privacy() {
+        std::set<int64_t> snapshot;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            snapshot = hidden_;
+        }
+        simplejson::Value arr = simplejson::Value::array();
+        for (int64_t qq : snapshot) arr.push_back(simplejson::Value(qq));
+
+        simplejson::Value root;
+        root["hidden"] = arr;
+
+        std::string path = data_dir("hbut_jw") + "/privacy.json";
+        std::string tmp = path + ".tmp";
+        if (write_file_binary(tmp, root.dump(2))) {
+            std::error_code ec;
+            std::filesystem::remove(std::filesystem::u8path(path), ec);
+            std::filesystem::rename(std::filesystem::u8path(tmp), std::filesystem::u8path(path), ec);
+            if (ec) std::filesystem::remove(std::filesystem::u8path(tmp), ec);
+        }
+    }
+
     void persist(int64_t qq, const hbut::Session& s) {
         simplejson::Value v;
         v["base"] = s.base;
@@ -195,6 +249,7 @@ private:
     std::mutex mu_;
     std::map<int64_t, hbut::Session> sessions_;
     std::map<int64_t, PendingCaptcha> pending_;
+    std::set<int64_t> hidden_; // 设置了「不许别人查看课表」的 QQ
 };
 
 // ---------------- 课表抓取与出图 ----------------
@@ -204,6 +259,38 @@ struct WeekResult {
     std::vector<hbut::Course> courses;
     int week = 1;
 };
+
+// ---------------- @ 目标 ----------------
+
+// 运行目录 config.json 里的机器人 QQ（用来把「@机器人自己」从 @ 列表里剔除）
+int64_t bot_qq() {
+    static int64_t cached = -1;
+    if (cached >= 0) return cached;
+    int64_t qq = 0;
+    auto cfg = simplejson::Value::parse(read_file_text("config.json"));
+    if (cfg.is_object()) {
+        const auto& ob = cfg["onebot"];
+        if (ob.is_object()) {
+            const auto& v = ob["bot_qq"];
+            if (v.is_number()) qq = v.get<int64_t>();
+            else if (v.is_string()) qq = atoll(v.get<std::string>().c_str());
+        }
+    }
+    cached = qq > 0 ? qq : 0;
+    return cached;
+}
+
+// 本条消息里「被 @ 的其他人」的 QQ；没 @ 别人返回 0
+int64_t pick_at_target(const PluginContext& ctx) {
+    if (ctx.at_user_ids.empty()) return 0;
+    int64_t bot = bot_qq();
+    for (int64_t id : ctx.at_user_ids) {
+        if (id <= 0) continue;
+        if (bot > 0 && id == bot) continue;
+        return id;
+    }
+    return 0;
+}
 
 bool load_week(hbut::Session& s, const UserEdits& edits, int want_week, WeekResult* out,
                std::string* err, bool* expired) {
@@ -429,6 +516,9 @@ private:
         return "【湖工大教务课表】\n"
                "• /课表                 本周课表图片\n"
                "• /课表 5               第 5 周课表\n"
+               "• /课表 @某人           看被 @ 的人的课表\n"
+               "• /课表 3 @某人         看对方第 3 周\n"
+               "• /课表 隐私 开/关      别人能不能 @ 你看你课表\n"
                "• /课表 扫码            学习通扫码登录（私聊）\n"
                "• /课表 登录 学号 密码   统一身份认证登录（私聊）\n"
                "• /课表 验证码 1234      需要验证码时补填\n"
@@ -446,8 +536,11 @@ private:
     static void dispatch(const PluginContext& ctx, const std::string& args) {
         Notifier n = make_notifier(ctx);
 
+        // @ 了别人：查对方的课表（隐私开关在 start_week 里校验）
+        int64_t at_target = (ctx.message_type == "group") ? pick_at_target(ctx) : 0;
+
         if (args.empty()) {
-            start_week(ctx, n, 0);
+            start_week(ctx, n, 0, at_target);
             return;
         }
         if (starts(args, "帮助") || starts(args, "help") || starts(args, "?") || starts(args, "？")) {
@@ -493,6 +586,22 @@ private:
         }
         if (starts(args, "状态")) {
             show_status(ctx, n);
+            return;
+        }
+        if (starts(args, "隐私")) {
+            std::string v = trim(args.substr(6)); // 「隐私」= 6 字节
+            if (v.empty() || starts(v, "查") || starts(v, "状态")) {
+                bool hidden = Store::get().is_hidden(ctx.user_id);
+                n.say(hidden ? "当前设置：别人 @ 你查课表时，会被告知不可查看。\n"
+                               "发「/课表 隐私 开」重新允许别人查看。"
+                             : "当前设置：别人 @ 你就能查看你的课表。\n"
+                               "发「/课表 隐私 关」可以禁止。");
+                return;
+            }
+            bool hide = (v == "关" || v == "关闭" || v == "0" || v == "off" || v == "禁止");
+            Store::get().set_hidden(ctx.user_id, hide);
+            n.say(hide ? "已禁止：别人 @ 你时会被告知课表不可查看。" 
+                       : "已允许：别人 @ 你就能查看你的课表。");
             return;
         }
         if (starts(args, "诊断") || starts(args, "debug")) {
@@ -552,28 +661,47 @@ private:
 
         int week = pick_week(args);
         if (week > 0) {
-            start_week(ctx, n, week);
+            start_week(ctx, n, week, at_target);
             return;
         }
         n.say("没看懂「" + args + "」这个指令。\n" + help_text());
     }
 
-    // ---- /课表 [周] ----
-    static void start_week(const PluginContext& ctx, Notifier n, int want_week) {
-        hbut::Session s;
-        if (!Store::get().get_session(ctx.user_id, &s)) {
-            n.say("还没登录教务系统。\n私聊发送「/课表 扫码」用学习通扫码登录，\n"
-                  "或「/课表 登录 学号 密码」用统一身份认证登录。");
+    // ---- /课表 [周] [@某人] ----
+    // target_qq > 0 表示查看被 @ 的人的课表
+    static void start_week(const PluginContext& ctx, Notifier n, int want_week,
+                           int64_t target_qq = 0) {
+        const int64_t qq = target_qq > 0 ? target_qq : ctx.user_id;
+        const bool other = (qq != ctx.user_id);
+
+        if (other && Store::get().is_hidden(qq)) {
+            n.say("对方设置了课表不可被他人查看。");
             return;
         }
-        n.say(want_week > 0 ? ("正在获取第 " + std::to_string(want_week) + " 周课表…")
-                            : std::string("正在获取本周课表…"));
+
+        hbut::Session s;
+        if (!Store::get().get_session(qq, &s)) {
+            if (other) {
+                n.say("对方还没有登录过教务系统，看不了。\n"
+                      "每个人得自己私聊我发一次「/课表 扫码」或「/课表 登录 学号 密码」。");
+            } else {
+                n.say("还没登录教务系统。\n私聊发送「/课表 扫码」用学习通扫码登录，\n"
+                      "或「/课表 登录 学号 密码」用统一身份认证登录。");
+            }
+            return;
+        }
+        if (other) {
+            n.say(want_week > 0 ? ("正在获取对方第 " + std::to_string(want_week) + " 周的课表…")
+                                : std::string("正在获取对方的课表…"));
+        } else {
+            n.say(want_week > 0 ? ("正在获取第 " + std::to_string(want_week) + " 周课表…")
+                                : std::string("正在获取本周课表…"));
+        }
 
         UserEdits edits;
-        load_user_edits(ctx.user_id, &edits);
+        load_user_edits(qq, &edits);   // 用对方自己的改名/隐藏设置
 
-        int64_t qq = ctx.user_id;
-        std::thread([qq, s, edits, want_week, n]() {
+        std::thread([qq, s, edits, want_week, other, n]() {
             ThreadGuard guard;
             try {
                 hbut::Session sess = s;
@@ -583,7 +711,8 @@ private:
                 if (!load_week(sess, edits, want_week, &wr, &err, &expired)) {
                     if (expired) {
                         Store::get().drop_session(qq);
-                        n.say("教务会话已过期，请重新登录：\n私聊「/课表 扫码」或「/课表 登录 学号 密码」");
+                        n.say(other ? "对方的教务会话已过期，需要本人重新私聊我扫码登录。"
+                                    : "教务会话已过期，请重新登录：\n私聊「/课表 扫码」或「/课表 登录 学号 密码」");
                     } else {
                         n.say("获取课表失败：" + err);
                     }
@@ -600,8 +729,13 @@ private:
                 std::string cap = "第 " + std::to_string(wr.week) + " 周课表";
                 if (wr.cal.current_week == wr.week) cap += "（本周）";
                 if (wr.courses.empty()) cap += " · 本周无课";
-                if (!edits.empty()) cap += "\n· 已应用本地改动（/课表 还原 可清除）";
-                if (!wr.cal.from_school) cap += "\n（校历接口不可用，周次按日期估算，可用「/课表 学期」确认）";
+                if (other) {
+                    std::string who = sess.student_id.empty() ? std::string("对方")
+                                                              : (sess.student_id + " ");
+                    cap = "【" + who + "】" + cap;
+                }
+                if (!edits.empty()) cap += "\n· 已应用对方本地改动";
+                if (!wr.cal.from_school) cap += "\n（校历接口不可用，周次按日期估算）";
                 n.say("[CQ:image,file=" + png + "]\n" + cap);
             } catch (const std::exception& e) {
                 n.say(std::string("课表处理异常：") + e.what());
