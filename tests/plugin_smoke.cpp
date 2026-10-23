@@ -4,6 +4,7 @@
 #include <windows.h>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <string>
 
 #include "plugin_manager.hpp"
@@ -15,6 +16,32 @@ static void on_send(void* user_data, const char* message_type, int64_t target, c
 
 static void on_log(void* user_data, const char* text) {
     printf("[log] %s\n", text);
+}
+
+
+// 写一份假的课表缓存，模拟「以前登录过、现在没有会话」
+static void write_fake_cache(const char* path) {
+    char buf[4096];
+    long long ts = (long long)time(nullptr) * 1000 - 3600LL * 1000;
+    snprintf(buf, sizeof(buf),
+             "{\"sem\":\"2026-2027-1\",\"base\":\"https://jwxt.hbut.edu.cn\",\"ts\":%lld,"
+             "\"cal\":{\"total\":20,\"cur\":8,\"school\":1,\"weeks\":["
+             "{\"w\":7,\"mon\":\"2026-10-12\",\"sun\":\"2026-10-18\"},"
+             "{\"w\":8,\"mon\":\"2026-10-19\",\"sun\":\"2026-10-25\"},"
+             "{\"w\":9,\"mon\":\"2026-10-26\",\"sun\":\"2026-11-01\"}]},"
+             "\"courses\":["
+             "{\"n\":\"高等数学\",\"t\":\"李明\",\"r\":\"1-301\",\"wd\":1,\"p\":1,\"bs\":1,\"cnt\":1,"
+             "\"wk\":[7,8,9]},"
+             "{\"n\":\"大学物理\",\"t\":\"王芳\",\"r\":\"2-105\",\"wd\":3,\"p\":5,\"bs\":3,\"cnt\":1,"
+             "\"wk\":[8]},"
+             "{\"n\":\"电路理论\",\"t\":\"涂静敏\",\"r\":\"3-102\",\"wd\":5,\"p\":7,\"bs\":4,\"cnt\":1,"
+             "\"wk\":[8]}]}",
+             ts);
+    FILE* f = fopen(path, "wb");
+    if (f) {
+        fwrite(buf, 1, strlen(buf), f);
+        fclose(f);
+    }
 }
 
 int main(int argc, char** argv) {
@@ -89,6 +116,35 @@ int main(int argc, char** argv) {
         Sleep(300); // 让后台线程把回包打完
     }
     Sleep(1500);
+
+    // ---- 本地课表缓存（只登录一次就能一直看）----
+    printf("\n===== 缓存测试 =====\n");
+    write_fake_cache("data/hbut_jw/cache/10001.json");
+
+    ctx.plain_text = "/课表";
+    printf("-- 无会话但有缓存：/课表\n");
+    p->on_message(ctx);
+    Sleep(1500);
+
+    ctx.plain_text = "/课表 状态";
+    printf("-- /课表 状态（应能看到缓存条数）\n");
+    p->on_message(ctx);
+    Sleep(600);
+
+    ctx.plain_text = "/课表 第8周";
+    printf("-- /课表 第8周（缓存里 current=8）\n");
+    p->on_message(ctx);
+    Sleep(1200);
+
+    ctx.plain_text = "/课表 清缓存";
+    printf("-- /课表 清缓存\n");
+    p->on_message(ctx);
+    Sleep(300);
+
+    ctx.plain_text = "/课表";
+    printf("-- 清缓存后再查（应提示没有缓存）\n");
+    p->on_message(ctx);
+    Sleep(800);
 
     // ---- 群聊 @ 场景 ----
     printf("\n===== 群聊 @ 测试 =====\n");

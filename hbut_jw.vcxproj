@@ -106,6 +106,7 @@
   <ItemGroup>
     <ClCompile Include="src\dllmain.cpp" />
     <ClCompile Include="src\jw_aes.cpp" />
+    <ClCompile Include="src\jw_cache.cpp" />
     <ClCompile Include="src\jw_hbut.cpp" />
     <ClCompile Include="src\jw_http.cpp" />
     <ClCompile Include="src\jw_render.cpp" />
@@ -113,6 +114,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="src\jw_aes.hpp" />
+    <ClInclude Include="src\jw_cache.hpp" />
     <ClInclude Include="src\jw_hbut.hpp" />
     <ClInclude Include="src\jw_http.hpp" />
     <ClInclude Include="src\jw_render.hpp" />

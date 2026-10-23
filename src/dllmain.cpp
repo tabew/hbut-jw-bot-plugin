@@ -21,6 +21,7 @@
 #include <thread>
 #include <vector>
 
+#include "jw_cache.hpp"
 #include "jw_hbut.hpp"
 #include "jw_http.hpp"
 #include "jw_local.hpp"
@@ -258,6 +259,8 @@ struct WeekResult {
     hbut::TermCalendar cal;
     std::vector<hbut::Course> courses;
     int week = 1;
+    bool from_cache = false;
+    long long cache_ts = 0;
 };
 
 // ---------------- @ 目标 ----------------
@@ -292,8 +295,36 @@ int64_t pick_at_target(const PluginContext& ctx) {
     return 0;
 }
 
-bool load_week(hbut::Session& s, const UserEdits& edits, int want_week, WeekResult* out,
-               std::string* err, bool* expired) {
+// ---------------- 课表抓取（在线优先，本地缓存兜底） ----------------
+
+// 原始课程 + 校历 + 用户改写 → 某一周要渲染的数据
+bool build_week_result(const std::vector<hbut::Course>& raw, const hbut::TermCalendar& cal,
+                       const UserEdits& edits, int want_week, WeekResult* out, std::string* err) {
+    out->cal = cal;
+    out->courses = apply_edits(raw, edits); // 先套本地改名/隐藏，再按周过滤
+
+    int week = want_week > 0 ? want_week : cal.current_week;
+    if (week < 1) week = 1;
+    if (cal.total_weeks > 0 && week > cal.total_weeks) {
+        *err = "第 " + std::to_string(week) + " 周超出本学期范围（共 " +
+               std::to_string(cal.total_weeks) + " 周）";
+        return false;
+    }
+    out->week = week;
+
+    std::vector<hbut::Course> filtered;
+    for (const auto& c : out->courses) {
+        if (c.weeks.empty() || std::find(c.weeks.begin(), c.weeks.end(), week) != c.weeks.end()) {
+            filtered.push_back(c);
+        }
+    }
+    out->courses.swap(filtered);
+    return true;
+}
+
+// 在线拉一次（xhid + 校历 + 课表），成功时顺手写缓存
+bool fetch_online(int64_t qq, hbut::Session& s, std::vector<hbut::Course>* courses,
+                  hbut::TermCalendar* cal, std::string* err, bool* expired) {
     *expired = false;
     HttpClient hc;
     hc.jar = s.jar;
@@ -310,41 +341,82 @@ bool load_week(hbut::Session& s, const UserEdits& edits, int want_week, WeekResu
             return false;
         }
     }
-
-    if (!hbut::fetch_calendar(hc, s.base, sem, &out->cal, nullptr)) {
+    if (!hbut::fetch_calendar(hc, s.base, sem, cal, nullptr)) {
         *err = "校历获取失败";
         return false;
     }
-
     std::string e;
     bool exp = false;
-    std::vector<hbut::Course> raw;
-    if (!hbut::fetch_schedule(hc, s.base, sem, s.xhid, &raw, &e, &exp)) {
+    if (!hbut::fetch_schedule(hc, s.base, sem, s.xhid, courses, &e, &exp)) {
         if (exp) *expired = true;
         *err = e;
         return false;
     }
     s.jar = hc.jar;
 
-    out->courses = apply_edits(raw, edits); // 先套本地改写，再按周过滤
+    // 缓存存「原始课程」：用户改名/隐藏仍然叠加在上层，随时可还原
+    WeekCache cache;
+    cache.semester = sem;
+    cache.base = s.base;
+    cache.fetched_ms = now_ms();
+    cache.courses = *courses;
+    cache.calendar = *cal;
+    save_cache(qq, cache);
+    return true;
+}
 
-    int week = want_week > 0 ? want_week : out->cal.current_week;
-    if (week < 1) week = 1;
-    if (out->cal.total_weeks > 0 && week > out->cal.total_weeks) {
-        *err = "第 " + std::to_string(week) + " 周超出本学期范围（共 " +
-               std::to_string(out->cal.total_weeks) + " 周）";
-        return false;
+// 取某一周的课表：有会话先在线拉，失败（网络/会话过期）就用本地缓存
+bool load_week(int64_t qq, hbut::Session* s, const UserEdits& edits, int want_week,
+               WeekResult* out, std::string* err, bool* expired) {
+    *expired = false;
+    const std::string sem = hbut::resolve_semester(s->semester);
+    s->semester = sem;
+
+    std::vector<hbut::Course> raw;
+    hbut::TermCalendar cal;
+    std::string online_err;
+    bool online_expired = false;
+    bool online = false;
+    if (!s->jar.empty()) {
+        online = fetch_online(qq, *s, &raw, &cal, &online_err, &online_expired);
     }
-    out->week = week;
 
-    std::vector<hbut::Course> filtered;
-    for (const auto& c : out->courses) {
-        if (c.weeks.empty() || std::find(c.weeks.begin(), c.weeks.end(), week) != c.weeks.end()) {
-            filtered.push_back(c);
+    if (online) return build_week_result(raw, cal, edits, want_week, out, err);
+
+    // 在线不可用 → 本地缓存兜底（登录过一次就永远能出图）
+    WeekCache cache;
+    if (load_cache(qq, &cache) && (cache.semester.empty() || cache.semester == sem)) {
+        if (build_week_result(cache.courses, cache.calendar, edits, want_week, out, err)) {
+            out->from_cache = true;
+            out->cache_ts = cache.fetched_ms;
+            *expired = online_expired;
+            return true;
         }
     }
-    out->courses.swap(filtered);
-    return true;
+
+    *expired = online_expired;
+    if (online_expired) {
+        *err = "教务会话已过期，且没有本地课表缓存";
+    } else if (!online_err.empty()) {
+        *err = online_err;
+    } else {
+        *err = "没有可用的课表缓存，请先登录";
+    }
+    return false;
+}
+
+// 登录成功后立刻拉一次并缓存，做到「只登录一次就记住课表」
+void warm_cache_after_login(int64_t qq, hbut::Session& s, Notifier n) {
+    std::vector<hbut::Course> raw;
+    hbut::TermCalendar cal;
+    std::string err;
+    bool expired = false;
+    if (fetch_online(qq, s, &raw, &cal, &err, &expired)) {
+        Store::get().put_session(qq, s);
+        n.note("[教务] 登录后已缓存课表 " + std::to_string(raw.size()) + " 条");
+    } else {
+        n.note("[教务] 登录后预热课表失败：" + err);
+    }
 }
 
 // 只拉教务原始课程（不套本地改写、不按周过滤），编辑指令用
@@ -519,6 +591,7 @@ private:
                "• /课表 @某人           看被 @ 的人的课表\n"
                "• /课表 3 @某人         看对方第 3 周\n"
                "• /课表 隐私 开/关      别人能不能 @ 你看你课表\n"
+               "• /课表 清缓存          删除本地课表缓存\n"
                "• /课表 扫码            学习通扫码登录（私聊）\n"
                "• /课表 登录 学号 密码   统一身份认证登录（私聊）\n"
                "• /课表 验证码 1234      需要验证码时补填\n"
@@ -581,7 +654,18 @@ private:
         }
         if (starts(args, "退出") || starts(args, "注销") || starts(args, "登出")) {
             Store::get().drop_session(ctx.user_id);
-            n.say("已退出教务登录，本地会话已清除。");
+            WeekCache cache;
+            if (load_cache(ctx.user_id, &cache)) {
+                n.say("已退出登录，课表缓存保留（仍可发「/课表」查看）。\n"
+                      "要彻底删除缓存发「/课表 清缓存」。");
+            } else {
+                n.say("已退出教务登录，本地会话已清除。");
+            }
+            return;
+        }
+        if (starts(args, "清缓存") || starts(args, "清除缓存") || starts(args, "删缓存")) {
+            clear_cache(ctx.user_id);
+            n.say("已删除本地课表缓存，下次查看需要重新登录拉取。");
             return;
         }
         if (starts(args, "状态")) {
@@ -681,14 +765,21 @@ private:
 
         hbut::Session s;
         if (!Store::get().get_session(qq, &s)) {
-            if (other) {
-                n.say("对方还没有登录过教务系统，看不了。\n"
-                      "每个人得自己私聊我发一次「/课表 扫码」或「/课表 登录 学号 密码」。");
-            } else {
-                n.say("还没登录教务系统。\n私聊发送「/课表 扫码」用学习通扫码登录，\n"
-                      "或「/课表 登录 学号 密码」用统一身份认证登录。");
+            // 没有会话不代表看不了：登录过一次就会留下课表缓存
+            WeekCache cache;
+            if (!load_cache(qq, &cache)) {
+                if (other) {
+                    n.say("对方还没有登录过教务系统，看不了。\n"
+                          "每个人得自己私聊我发一次「/课表 扫码」或「/课表 登录 学号 密码」。");
+                } else {
+                    n.say("还没登录教务系统。\n私聊发送「/课表 扫码」用学习通扫码登录，\n"
+                          "或「/课表 登录 学号 密码」用统一身份认证登录。");
+                }
+                return;
             }
-            return;
+            // 用空会话占位：load_week 会发现 jar 为空，直接读缓存
+            s = hbut::Session();
+            s.semester = cache.semester;
         }
         if (other) {
             n.say(want_week > 0 ? ("正在获取对方第 " + std::to_string(want_week) + " 周的课表…")
@@ -708,17 +799,21 @@ private:
                 WeekResult wr;
                 std::string err;
                 bool expired = false;
-                if (!load_week(sess, edits, want_week, &wr, &err, &expired)) {
-                    if (expired) {
-                        Store::get().drop_session(qq);
-                        n.say(other ? "对方的教务会话已过期，需要本人重新私聊我扫码登录。"
-                                    : "教务会话已过期，请重新登录：\n私聊「/课表 扫码」或「/课表 登录 学号 密码」");
+                if (!load_week(qq, &sess, edits, want_week, &wr, &err, &expired)) {
+                    if (expired) Store::get().drop_session(qq);
+                    if (other) {
+                        n.say("取不到对方的课表：" + err +
+                              "\n对方得自己私聊我登录一次，之后课表会一直记着。");
                     } else {
-                        n.say("获取课表失败：" + err);
+                        n.say(err + "\n私聊发送「/课表 扫码」重新登录即可，登录后课表会一直记着。");
                     }
                     return;
                 }
-                Store::get().put_session(qq, sess);
+                if (expired) {
+                    Store::get().drop_session(qq); // 会话确实失效：清掉，后续直接走缓存
+                } else if (!sess.jar.empty()) {
+                    Store::get().put_session(qq, sess); // 只有真会话才回写（缓存占位别存）
+                }
 
                 std::string rerr;
                 std::string png = render_for(sess, wr, qq, &rerr);
@@ -734,7 +829,11 @@ private:
                                                               : (sess.student_id + " ");
                     cap = "【" + who + "】" + cap;
                 }
-                if (!edits.empty()) cap += "\n· 已应用对方本地改动";
+                if (!edits.empty()) cap += "\n· 已应用本地改动";
+                if (wr.from_cache) {
+                    cap += "\n· 本地缓存（" + cache_age_text(wr.cache_ts) + "）";
+                    if (expired) cap += " · 教务会话已过期，重新登录可更新";
+                }
                 if (!wr.cal.from_school) cap += "\n（校历接口不可用，周次按日期估算）";
                 n.say("[CQ:image,file=" + png + "]\n" + cap);
             } catch (const std::exception& e) {
@@ -821,7 +920,8 @@ private:
                 }
                 s.jar = hc.jar;
                 Store::get().put_session(qq, s);
-                n.say("✅ 学习通登录成功！\n发送「/课表」查看本周课表。");
+                warm_cache_after_login(qq, s, n);
+                n.say("✅ 学习通登录成功！\n课表已保存，之后直接发「/课表」就行，会话过期也能看。");
             } catch (const std::exception& e) {
                 n.say(std::string("扫码登录异常：") + e.what());
             } catch (...) {
@@ -959,7 +1059,9 @@ private:
         s.jar = hc.jar;
         Store::get().put_session(qq, s);
         n.note("[教务] 账号密码登录成功 qq=" + std::to_string(qq) + " sid=" + user);
-        n.say("✅ 登录成功（学号 " + user + "）\n发送「/课表」查看本周课表。");
+        warm_cache_after_login(qq, s, n); // 顺手把课表存下来
+        n.say("✅ 登录成功（学号 " + user +
+              "）\n课表已保存，之后直接发「/课表」就行，会话过期也能看。");
     }
 
     // ---- 课程编辑：解析与展示 ----
@@ -1472,7 +1574,15 @@ private:
     static void show_status(const PluginContext& ctx, Notifier n) {
         hbut::Session s;
         if (!Store::get().get_session(ctx.user_id, &s)) {
-            n.say("当前未登录。\n私聊「/课表 扫码」或「/课表 登录 学号 密码」。");
+            WeekCache cache;
+            if (load_cache(ctx.user_id, &cache)) {
+                n.say("当前没有在线会话（Cookie 已失效或已退出）。\n"
+                      "课表缓存：" + std::to_string(cache.courses.size()) + " 条 · " +
+                      cache_age_text(cache.fetched_ms) + "\n"
+                      "仍可发「/课表」离线查看；想更新数据就重新登录一次。");
+            } else {
+                n.say("当前未登录。\n私聊「/课表 扫码」或「/课表 登录 学号 密码」。");
+            }
             return;
         }
         int64_t qq = ctx.user_id;
@@ -1487,6 +1597,13 @@ private:
                 text += "登录方式：" + std::string(s.chaoxing ? "学习通扫码" : "统一身份认证") + "\n";
                 text += "教务域名：" + s.base + "\n";
                 text += "学期：" + semester_label(s.semester) + "\n";
+                WeekCache cache;
+                if (load_cache(qq, &cache)) {
+                    text += "课表缓存：" + std::to_string(cache.courses.size()) + " 条 · " +
+                            cache_age_text(cache.fetched_ms) + "\n";
+                } else {
+                    text += "课表缓存：无\n";
+                }
                 if (!s.student_id.empty()) text += "学号：" + s.student_id + "\n";
                 n.say(text);
             } catch (...) {
