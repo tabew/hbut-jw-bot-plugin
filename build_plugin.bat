@@ -22,7 +22,8 @@ echo 头文件目录: %TABMIND_INCLUDE%
 "%CL%" /nologo /LD /std:c++17 /O2 /MT /EHsc /utf-8 ^
  /D NDEBUG /D _WINDOWS /D _USRDLL /D NOMINMAX /D _CRT_SECURE_NO_WARNINGS /D UNICODE /D _UNICODE ^
  /I "%TABMIND_INCLUDE%" /Foobj\ /Fdobj\hbut_jw.pdb /Fe:hbut_jw.dll ^
- src\jw_util.cpp src\jw_aes.cpp src\jw_http.cpp src\jw_hbut.cpp src\jw_render.cpp src\dllmain.cpp ^
+ src\jw_util.cpp src\jw_aes.cpp src\jw_http.cpp src\jw_hbut.cpp src\jw_local.cpp ^
+ src\jw_cache.cpp src\jw_render.cpp src\dllmain.cpp ^
  /link /SUBSYSTEM:WINDOWS /DLL ^
  gdiplus.lib winhttp.lib ole32.lib user32.lib gdi32.lib advapi32.lib
 
