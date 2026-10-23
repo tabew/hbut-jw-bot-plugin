@@ -268,12 +268,12 @@ bool render_timetable_png(const TimetableImage& data, const std::string& out_pat
         std::vector<Item> items;
         for (const auto& c : data.courses) {
             if (c.weekday - 1 != day) continue;
-            int r0 = big_row_of(c.period);
+            // 优先用接口给的大节号 djs；没有才按小节折算
+            int r0 = c.big_section > 0 ? c.big_section - 1 : big_row_of(c.period);
             if (r0 < 0 || r0 >= rows) continue;
-            int lastPeriod = c.period + std::max(1, c.count) - 1;
-            int lastBig = big_row_of(lastPeriod);
-            if (lastBig >= rows) lastBig = rows - 1;
-            int span = lastBig - r0 + 1;
+            // 教务一条记录就是一个大节（count=1）；自定义课程可用 count 跨多行
+            int span = std::max(1, c.count);
+            if (r0 + span > rows) span = rows - r0;
             if (span < 1) span = 1;
 
             // 教务有时把一门连堂课拆成多条小节记录（如第1节、第2节各一条）。

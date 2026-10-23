@@ -434,7 +434,7 @@ private:
                "• /课表 验证码 1234      需要验证码时补填\n"
                "• /课表 课程            列出课程编号\n"
                "• /课表 改 1 教室=1教-301 教师=李明   改课程信息\n"
-               "• /课表 加 名称=自习 星期=3 节次=9 连堂=2 周数=1-16\n"
+               "• /课表 加 名称=自习 星期=3 节次=4 连堂=1 周数=1-16\n"
                "• /课表 删 1            隐藏某门课\n"
                "• /课表 还原            清除本地改动\n"
                "• /课表 时间            查看/修改每节作息时间\n"
@@ -930,10 +930,13 @@ private:
                     }
                     std::string line = std::to_string(i + 1) + ". " + names[i];
                     if (sample) {
-                        line += "  " + std::string(weekday_cn(sample->weekday)) + " 第" +
-                                std::to_string(sample->period) + "-" +
-                                std::to_string(sample->period + std::max(1, sample->count) - 1) +
-                                "节";
+                        int big = sample->big_section > 0 ? sample->big_section
+                                                          : (sample->period + 1) / 2;
+                        line += "  " + std::string(weekday_cn(sample->weekday)) + " 大节" +
+                                std::to_string(big);
+                        if (sample->count > 1) {
+                            line += "-" + std::to_string(big + sample->count - 1);
+                        }
                         if (!sample->room.empty()) line += "  " + sample->room;
                     }
                     for (const auto& e : edits.edits) {
@@ -948,7 +951,7 @@ private:
                     out += "自定义课程：" + std::to_string(edits.adds.size()) + " 门\n";
                 }
                 out += "\n改：/课表 改 1 教室=1教-301 教师=李明\n"
-                       "加：/课表 加 名称=自习 星期=3 节次=9 连堂=2 周数=1-16 教室=图书馆\n"
+                       "加：/课表 加 名称=自习 星期=3 节次=4 连堂=1 周数=1-16 教室=图书馆\n"
                        "删：/课表 删 1        还原：/课表 还原";
                 n.say(out);
             } catch (...) {
@@ -1087,7 +1090,7 @@ private:
     static void add_course(const PluginContext& ctx, Notifier n, const std::string& rest) {
         auto fields = split_fields(rest);
         if (fields.empty()) {
-            n.say("用法：/课表 加 名称=自习 星期=3 节次=9 连堂=2 周数=1-16 教室=图书馆");
+            n.say("用法：/课表 加 名称=自习 星期=3 节次=4 连堂=1 周数=1-16 教室=图书馆\n（节次=第几个大节 1~6，连堂=跨几个大节）");
             return;
         }
         CourseEdit tmp;
@@ -1105,7 +1108,11 @@ private:
             return;
         }
         if (tmp.weekday <= 0 || tmp.period <= 0) {
-            n.say("需要指定 星期=1~7 与 节次=1~13，例如：/课表 加 名称=自习 星期=3 节次=9");
+            n.say("需要指定 星期=1~7 与 节次=1~6（第几个大节），例如：/课表 加 名称=自习 星期=3 节次=4");
+            return;
+        }
+        if (tmp.period > 7) {
+            n.say("节次是大节号（1~6），不是小节。第 3 大节就写 节次=3。");
             return;
         }
 
@@ -1118,8 +1125,9 @@ private:
         c.room = tmp.room;
         c.teacher = tmp.teacher;
         c.weekday = tmp.weekday;
-        c.period = tmp.period;
-        c.count = tmp.count > 0 ? tmp.count : 2;
+        c.big_section = tmp.period;                 // 用户填的「节次」就是第几个大节
+        c.period = (tmp.period - 1) * 2 + 1;
+        c.count = tmp.count > 0 ? tmp.count : 1;
         std::string weeks_text = tmp.weeks.empty() ? std::string("1-20") : tmp.weeks;
         c.weeks = hbut::parse_weeks(weeks_text);
         edits.adds.push_back(c);
@@ -1128,8 +1136,8 @@ private:
             n.say("保存失败，检查 data/hbut_jw 目录权限。");
             return;
         }
-        n.say("✅ 已添加「" + c.name + "」" + weekday_cn(c.weekday) + " 第" + std::to_string(c.period) +
-              "-" + std::to_string(c.period + c.count - 1) + "节，周次 " + weeks_text +
+        n.say("✅ 已添加「" + c.name + "」" + weekday_cn(c.weekday) + " 大节" + std::to_string(c.big_section) +
+              (c.count > 1 ? "-" + std::to_string(c.big_section + c.count - 1) : std::string()) + "，周次 " + weeks_text +
               "\n发「/课表」看效果。");
     }
 

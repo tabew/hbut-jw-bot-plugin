@@ -26,9 +26,10 @@ struct Course {
     std::string room;
     std::string building;
     std::string class_name;
-    int weekday = 1;   // 1..7
-    int period = 1;    // 起始小节
-    int count = 2;     // 连上小节数
+    int weekday = 1;      // 1..7
+    int period = 1;       // 起始小节（djc）
+    int big_section = 0;  // 大节号（接口的 djs），0 = 未知，按 period 折算
+    int count = 1;        // 跨几个大节（教务记录恒为 1，自定义课程可 >1）
     std::vector<int> weeks;
 };
 
@@ -115,6 +116,10 @@ bool fetch_calendar(jw::HttpClient& hc, const std::string& base, const std::stri
 
 // "1-16周(单)" / "3,5,7周" / "1-16周" → 周次列表
 std::vector<int> parse_weeks(const std::string& text);
+
+// 把接口的 djc（起始小节）/ djs 换算成「起始大节(1 基) + 跨几个大节」。
+// djs 有两种语义：新版是大节号（= ceil(djc/2)），旧版是连堂小节数，这里自适应。
+void normalize_big_section(int djc, int djs, int total_periods, int* big_section, int* span);
 
 // 从课表课程推断当前周次（校历拿不到时的兜底）
 int infer_current_week(const std::vector<WeekSpan>& weeks);

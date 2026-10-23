@@ -509,6 +509,29 @@ bool fetch_xhid(jw::HttpClient& hc, const std::string& base, const std::string& 
     return false;
 }
 
+void normalize_big_section(int djc, int djs, int total_periods, int* big_section, int* span) {
+    if (djc < 1) djc = 1;
+    if (total_periods < 2) total_periods = 11;
+    if (djc > total_periods) djc = total_periods;
+
+    int expect_big = (djc + 1) / 2; // 若 djs 是大节号，它必然等于 ceil(djc/2)
+    int end_period = djc;
+    if (djs > 0) {
+        if (djs == expect_big) {
+            end_period = std::min(djs * 2, total_periods); // 大节号 → 该大节最后一小节
+        } else {
+            end_period = djc + djs - 1; // 连堂小节数
+        }
+    }
+    if (end_period < djc) end_period = djc;
+    if (end_period > total_periods) end_period = total_periods;
+
+    int big0 = (djc - 1) / 2;
+    int big1 = (end_period - 1) / 2;
+    if (big_section) *big_section = big0 + 1;
+    if (span) *span = big1 - big0 + 1;
+}
+
 std::vector<int> parse_weeks(const std::string& text) {
     std::vector<int> weeks;
     if (text.empty()) return weeks;
@@ -613,10 +636,11 @@ bool fetch_schedule(jw::HttpClient& hc, const std::string& base, const std::stri
             c.class_name = json_str(item, "jxbzc");
             c.weekday = json_int(item, "xingqi", json_int(item, "xqj", 1));
             c.period = json_int(item, "djc", json_int(item, "jcs", 1));
-            c.count = json_int(item, "djs", 2);
+
+            normalize_big_section(c.period, json_int(item, "djs", 0), 11, &c.big_section, &c.count);
             if (c.weekday < 1 || c.weekday > 7) continue;
             if (c.period < 1) c.period = 1;
-            if (c.count < 1) c.count = 2;
+            if (c.count < 1) c.count = 1;
             std::string wtext = json_str(item, "zcstr");
             if (wtext.empty()) wtext = json_str(item, "zc");
             if (wtext.empty()) wtext = json_str(item, "zcd");

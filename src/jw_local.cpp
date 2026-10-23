@@ -111,12 +111,14 @@ bool load_user_edits(int64_t qq, UserEdits* out) {
             c.teacher = item["teacher"].get<std::string>();
             c.room = item["room"].get<std::string>();
             c.weekday = item["weekday"].get<int>();
-            c.period = item["period"].get<int>();
+            // 自定义课程里 period 字段存的是「大节号」
+            c.big_section = item["period"].get<int>();
             c.count = item["count"].get<int>();
             std::string weeks = item["weeks"].get<std::string>();
             if (c.weekday < 1) c.weekday = 1;
-            if (c.period < 1) c.period = 1;
-            if (c.count < 1) c.count = 2;
+            if (c.big_section < 1) c.big_section = 1;
+            c.period = (c.big_section - 1) * 2 + 1;
+            if (c.count < 1) c.count = 1;
             c.weeks = hbut::parse_weeks(weeks);
             out->adds.push_back(c);
             out->add_weeks.push_back(weeks);
@@ -149,7 +151,7 @@ bool save_user_edits(int64_t qq, const UserEdits& edits) {
         if (!c.teacher.empty()) item["teacher"] = c.teacher;
         if (!c.room.empty()) item["room"] = c.room;
         item["weekday"] = c.weekday;
-        item["period"] = c.period;
+        item["period"] = c.big_section > 0 ? c.big_section : (c.period + 1) / 2;
         item["count"] = c.count;
         item["weeks"] = i < edits.add_weeks.size() ? edits.add_weeks[i] : std::string();
         adds_arr.push_back(item);
@@ -196,7 +198,10 @@ std::vector<hbut::Course> apply_edits(const std::vector<hbut::Course>& src, cons
             if (!hit->room.empty()) c.room = hit->room;
             if (!hit->teacher.empty()) c.teacher = hit->teacher;
             if (hit->weekday > 0) c.weekday = hit->weekday;
-            if (hit->period > 0) c.period = hit->period;
+            if (hit->period > 0) {
+                c.big_section = hit->period;
+                c.period = (hit->period - 1) * 2 + 1;
+            }
             if (hit->count > 0) c.count = hit->count;
             if (!hit->weeks.empty()) c.weeks = hbut::parse_weeks(hit->weeks);
         }

@@ -59,6 +59,38 @@ int main() {
     auto weeks2 = hbut::parse_weeks("3,5,7,9-11周");
     printf("weeks2=%zu (%d %d %d ...)\n", weeks2.size(), weeks2[0], weeks2[1], weeks2[2]);
 
+    // 3) djc/djs → 大节换算（djs 新旧两种语义都要对）
+    {
+        struct Case {
+            int djc;
+            int djs;
+            int big;
+            int span;
+            const char* why;
+        };
+        // 新版：djs = 大节号 = ceil(djc/2)
+        const Case cases[] = {
+            {1, 1, 1, 1, "大节号"},   {2, 1, 1, 1, "大节号"},   {3, 2, 2, 1, "大节号"},
+            {4, 2, 2, 1, "大节号"},   {5, 3, 3, 1, "大节号"},   {6, 3, 3, 1, "大节号"},
+            {7, 4, 4, 1, "大节号"},   {8, 4, 4, 1, "大节号"},   {9, 5, 5, 1, "大节号"},
+            {10, 5, 5, 1, "大节号"},  {11, 6, 6, 1, "大节号"},
+            // 旧版：djs = 连堂小节数
+            {1, 2, 1, 1, "连堂"},     {1, 3, 1, 2, "连堂"},     {5, 4, 3, 2, "连堂"},
+            {3, 1, 2, 1, "连堂"},     {0, 0, 1, 1, "缺字段"},
+        };
+        int bad = 0;
+        for (const auto& c : cases) {
+            int big = 0, span = 0;
+            hbut::normalize_big_section(c.djc, c.djs, 11, &big, &span);
+            if (big != c.big || span != c.span) {
+                printf("  NG djc=%d djs=%d -> big=%d span=%d (期望 %d/%d, %s)\n", c.djc, c.djs, big,
+                       span, c.big, c.span, c.why);
+                ++bad;
+            }
+        }
+        printf("big_section cases: %s (%d bad)\n", bad == 0 ? "OK" : "FAIL", bad);
+    }
+
     // 3) 课表出图（假数据，检查排版）
     jw::TimetableImage img;
     img.semester_label = "2026-2027学年 第一学期";
@@ -74,37 +106,50 @@ int main() {
     mon.y = 2026; mon.m = 10; mon.d = 19;
     for (int i = 0; i < 7; ++i) img.day_dates.push_back(jw::add_days(mon, i));
 
-    auto add = [&img](const char* name, const char* teacher, const char* room, int wd, int period,
-                      int count) {
+    // 按「大节」造数据（与大节号 djs 语义一致：一条记录 = 一个大节）
+    auto add = [&img](const char* name, const char* teacher, const char* room, int wd, int big,
+                      int span = 1) {
         hbut::Course c;
         c.name = name;
         c.teacher = teacher;
         c.room = room;
         c.weekday = wd;
-        c.period = period;
-        c.count = count;
+        c.big_section = big;
+        c.period = (big - 1) * 2 + 1;
+        c.count = span;
         img.courses.push_back(c);
     };
-    add("高等数学A(上)", "李明", "1教-301", 1, 1, 2);
-    add("大学物理", "王芳", "2教-105", 1, 5, 2);
-    add("程序设计基础", "张伟", "3教-机房A", 2, 1, 2);
-    add("线性代数", "赵磊", "1教-202", 2, 7, 2);
-    add("大学生英语视听说", "Alice", "外语楼-305", 3, 3, 2);
-    add("体育（篮球）", "陈强", "东区篮球场", 3, 9, 2);
-    add("数据结构", "刘洋", "3教-401", 4, 1, 2);
-    add("马克思主义基本原理", "孙丽", "5教-108", 4, 5, 2);
-    add("电路分析基础", "周涛", "2教-208", 5, 3, 3);
-    add("习近平新时代中国特色社会主义思想概论", "何静", "5教-201", 5, 8, 3);
-    add("创新创业实践", "客座讲师", "双创大楼-A", 6, 2, 4);
 
-    // 极端用例：超长课名 + 超长教室名（验证不溢出格子）
-    add("大学生创新创业训练计划项目实践与学科竞赛指导课程", "欧阳老师", "创新创业大楼A座-301智慧教室（东区）", 2,
-        4, 2);
-    // 同一天同一节两门课（验证重叠自动分栏）
-    add("形势与政策", "钱老师", "1教-101", 4, 3, 2);
-    add("专业导论", "孙老师", "4教-205", 4, 3, 2);
-    // 第 12/13 节（验证行数自动扩展）
-    add("中共党史", "丁老师", "2-001", 4, 9, 2);
+    // 周一
+    add("马克思主义基本原理", "王秀红", "5B-003", 1, 2);
+    add("模拟电子电路", "徐元中", "2-109", 1, 3);
+    // 周二
+    add("电路理论(一)-2(实验)", "彭编集", "6B-3-9", 2, 1);
+    add("复变函数与积分变换", "彭编集", "工1A-01", 2, 2);
+    add("模拟电子电路", "徐元中", "2-109", 2, 3);
+    add("电路理论(一)-2", "涂静敏", "3-102", 2, 4);
+    // 周三
+    add("模拟电子电路", "徐元中", "3-204", 3, 1);
+    add("中外文化交流与互鉴", "向玉", "7B-301", 3, 2);
+    add("大学物理(一)-2", "闵锐", "5B-313", 3, 3);
+    add("工程电磁场", "张骁", "3-106", 3, 4);
+    // 周四
+    add("马克思主义基本原理", "王秀红", "5B-003", 4, 1);
+    add("复变函数与积分变换", "彭编集", "工1A-001", 4, 2);
+    add("大学物理(一)-2", "闵锐", "5B-213", 4, 3);
+    add("电路理论(一)-2", "涂静敏", "3-102", 4, 4);
+    add("中共党史", "丁老师", "2-001", 4, 5);
+    // 周五
+    add("工程电磁场", "张骁", "3-102", 5, 1);
+    add("电路理论(一)-2", "涂静敏", "3-102", 5, 4);
+    // 周六：跨两个大节（验证多行卡片）
+    add("创新创业实践", "客座讲师", "双创大楼-A", 6, 2, 2);
+    // 极端用例：超长课名 + 超长教室名（验证不溢出）
+    add("大学生创新创业训练计划项目实践与学科竞赛指导课程", "欧阳老师",
+        "创新创业大楼A座-301智慧教室（东区）", 3, 5);
+    // 同一天同一大节两门课（验证重叠自动分栏）
+    add("形势与政策", "钱老师", "1教-101", 5, 2);
+    add("专业导论", "孙老师", "4教-205", 5, 2);
 
     // 3.5) 验证本地改写：改名 / 改教室 / 隐藏 / 新增
     {
@@ -122,7 +167,8 @@ int main() {
         added.name = "自定义自习";
         added.room = "图书馆";
         added.weekday = 7;
-        added.period = 5;
+        added.big_section = 5;
+        added.period = 9;
         added.count = 2;
         added.weeks = hbut::parse_weeks("1-20");
         ed.adds.push_back(added);
